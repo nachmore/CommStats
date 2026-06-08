@@ -47,6 +47,36 @@ var (
 	tokenMaxAge = 45 * time.Minute
 )
 
+// identity caches the signed-in user's address + home org for the process, so
+// a multi-day backfill makes at most one /me call.
+var (
+	identMu   sync.Mutex
+	identAddr string
+	identOrg  string
+)
+
+// getIdentity returns the signed-in user's email and home org label, fetching
+// once and caching.
+func getIdentity(ctx context.Context, c *client) (addr, org string, err error) {
+	identMu.Lock()
+	if identAddr != "" {
+		a, o := identAddr, identOrg
+		identMu.Unlock()
+		return a, o, nil
+	}
+	identMu.Unlock()
+
+	a, err := c.myAddress(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	o := orgOf(a)
+	identMu.Lock()
+	identAddr, identOrg = a, o
+	identMu.Unlock()
+	return a, o, nil
+}
+
 // getToken returns a cached token if still fresh, otherwise captures a new one.
 func getToken(ctx context.Context, headless bool) (string, error) {
 	tokenMu.Lock()

@@ -88,19 +88,28 @@ func (s *Source) Collect(ctx context.Context, w source.TimeWindow) ([]source.Met
 	if err != nil {
 		return nil, err
 	}
-	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
-	events, err := c.calendarCount(ctx, dayStart, dayStart.AddDate(0, 0, 1))
-	if err != nil {
-		return nil, err
-	}
-
-	return []source.Metric{
+	metrics := []source.Metric{
 		metric("emails_received", received),
 		metric("emails_read", read),
 		metric("emails_unread", received-read),
 		metric("emails_sent", sent),
-		metric("calendar_events", events),
-	}, nil
+	}
+
+	// Rich calendar metrics: fetch the day's events and bucket them.
+	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
+	events, err := c.calendarEvents(ctx, dayStart, dayStart.AddDate(0, 0, 1))
+	if err != nil {
+		return nil, err
+	}
+	metrics = append(metrics, metric("calendar_events", len(events)))
+
+	selfAddr, homeOrg, err := getIdentity(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	metrics = append(metrics, collectCalendar(s.Name(), w, events, selfAddr, homeOrg)...)
+
+	return metrics, nil
 }
 
 // dayFilter builds a $filter selecting items whose field falls on the local
