@@ -16,9 +16,9 @@ import (
 // Config is the on-disk app config at <ConfigDir>/config.json.
 type Config struct {
 	// Ignore lists channels/DMs to exclude from reports, by name or id. Matching
-	// is normalized (case-insensitive, leading #/@ stripped, "_" and "-"
-	// treated as equivalent) so "nachmano_playground", "#nachmano-playground",
-	// and the raw channel id all work.
+	// is case-insensitive and ignores a leading #/@ (so "#fiducia-leads" matches
+	// the stored "fiducia-leads"), but is otherwise literal — a typo'd entry
+	// matches nothing and is reported as a warning rather than silently fixed.
 	Ignore []string `json:"ignore"`
 }
 
@@ -40,37 +40,40 @@ func Load() (Config, error) {
 	return c, nil
 }
 
-// IgnoreSet is a normalized set of channel identifiers to exclude.
+// IgnoreSet is a set of channel identifiers to exclude, tracking which entries
+// have actually matched so unused (likely typo'd) entries can be reported.
 type IgnoreSet struct {
-	keys map[string]struct{}
+	keys    map[string]struct{}
+	matched map[string]struct{}
 }
 
 // NewIgnoreSet builds an IgnoreSet from raw config patterns.
-func NewIgnoreSet(patterns []string) IgnoreSet {
+func NewIgnoreSet(patterns []string) *IgnoreSet {
 	keys := make(map[string]struct{}, len(patterns))
 	for _, p := range patterns {
 		if k := normalize(p); k != "" {
 			keys[k] = struct{}{}
 		}
 	}
-	return IgnoreSet{keys: keys}
+	return &IgnoreSet{keys: keys, matched: map[string]struct{}{}}
 }
 
 // Empty reports whether the set has no entries (so callers can skip filtering).
-func (s IgnoreSet) Empty() bool { return len(s.keys) == 0 }
+func (s *IgnoreSet) Empty() bool { return s == nil || len(s.keys) == 0 }
 
-// MatchesRecord reports whether a record's channel (by name or id) is ignored.
-func (s IgnoreSet) MatchesRecord(r store.Record) bool {
-	if len(s.keys) == 0 {
+// MatchesRecord reports whether a record's channel (by name or id) is ignored,
+// recording which entry matched.
+func (s *IgnoreSet) MatchesRecord(r store.Record) bool {
+	if s.Empty() {
 		return false
 	}
-	if id := r.Dimensions["channel_id"]; id != "" {
-		if _, ok := s.keys[normalize(id)]; ok {
-			return true
+	for _, dim := range []string{"channel_id", "channel_name"} {
+		v := normalize(r.Dimensions[dim])
+		if v == "" {
+			continue
 		}
-	}
-	if name := r.Dimensions["channel_name"]; name != "" {
-		if _, ok := s.keys[normalize(name)]; ok {
+		if _, ok := s.keys[v]; ok {
+			s.matched[v] = struct{}{}
 			return true
 		}
 	}
@@ -78,7 +81,7 @@ func (s IgnoreSet) MatchesRecord(r store.Record) bool {
 }
 
 // Filter returns the records that are not ignored.
-func (s IgnoreSet) Filter(recs []store.Record) []store.Record {
+func (s *IgnoreSet) Filter(recs []store.Record) []store.Record {
 	if s.Empty() {
 		return recs
 	}
@@ -91,12 +94,28 @@ func (s IgnoreSet) Filter(recs []store.Record) []store.Record {
 	return out
 }
 
-// normalize lower-cases, strips a leading #/@, and maps "_" to "-" so the
-// various ways a user might write a channel name all compare equal.
+// Unmatched returns the configured ignore entries that never matched any
+// record — typically typos. Order is not significant.
+func (s *IgnoreSet) Unmatched() []string {
+	if s.Empty() {
+		return nil
+	}
+	var out []string
+	for k := range s.keys {
+		if _, ok := s.matched[k]; !ok {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// normalize lower-cases and strips a leading #/@ so an ignore entry written the
+// way it appears in a report ("#fiducia-leads", "@jbbaird") matches the stored
+// bare name. Matching is otherwise literal — no fuzzy fixes — so a real typo
+// fails to match and surfaces via Unmatched.
 func normalize(s string) string {
 	s = strings.TrimSpace(strings.ToLower(s))
 	s = strings.TrimPrefix(s, "#")
 	s = strings.TrimPrefix(s, "@")
-	s = strings.ReplaceAll(s, "_", "-")
 	return s
 }

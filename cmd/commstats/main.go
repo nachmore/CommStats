@@ -206,7 +206,7 @@ func daysInRange(start, end time.Time) []time.Time {
 
 // ignoreSet excludes configured channels/DMs from reports. Loaded once per
 // report invocation and applied to every store query via queryRecords.
-var ignoreSet config.IgnoreSet
+var ignoreSet *config.IgnoreSet
 
 func runReport(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("report", flag.ExitOnError)
@@ -232,6 +232,10 @@ func runReport(ctx context.Context, args []string) error {
 
 	fmtv := report.Format(*format)
 
+	// Warn about ignore entries that matched nothing (likely typos) once the
+	// report has run and every record has been checked against the set.
+	defer warnUnmatchedIgnores()
+
 	// HTML is an interactive, charted view over the full retained range.
 	if fmtv == report.HTML {
 		return runHTMLReport(ctx, st, *src, *top, *out)
@@ -250,6 +254,15 @@ func runReport(ctx context.Context, args []string) error {
 		lookback = *days
 	}
 	return renderSection(ctx, st, *src, fmtv, period, lookback)
+}
+
+// warnUnmatchedIgnores prints a stderr warning for each configured ignore entry
+// that never matched any record, so a typo'd entry is surfaced rather than
+// silently doing nothing.
+func warnUnmatchedIgnores() {
+	for _, u := range ignoreSet.Unmatched() {
+		fmt.Fprintf(os.Stderr, "warning: ignore entry %q matched no channels or DMs\n", u)
+	}
 }
 
 // queryRecords runs a store query and drops any records matching the configured
