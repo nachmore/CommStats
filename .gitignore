@@ -1,0 +1,15 @@
+# Build output
+/bin/
+*.exe
+
+# Local data and generated reports
+*.db
+*.db-journal
+*.db-wal
+report-*.html
+report-*.md
+
+# Editor / OS cruft
+.DS_Store
+.idea/
+.vscode/
