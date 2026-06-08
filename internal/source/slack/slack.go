@@ -10,6 +10,9 @@ package slack
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/nachmore/commstats/internal/source"
 )
@@ -74,6 +77,7 @@ func (s *Source) Collect(ctx context.Context, w source.TimeWindow) ([]source.Met
 		count int
 	}
 	byChannel := map[string]*channelStat{}
+	byHour := map[int]int{} // local hour 0-23 -> message count
 
 	for page := 1; ; page++ {
 		res, err := c.searchMessages(ctx, query, page)
@@ -88,13 +92,16 @@ func (s *Source) Collect(ctx context.Context, w source.TimeWindow) ([]source.Met
 				byChannel[id] = cs
 			}
 			cs.count++
+			if h, ok := messageHour(m.TS); ok {
+				byHour[h]++
+			}
 		}
 		if page >= res.Paging.Pages || res.Paging.Pages == 0 {
 			break
 		}
 	}
 
-	metrics := make([]source.Metric, 0, len(byChannel))
+	metrics := make([]source.Metric, 0, len(byChannel)+len(byHour))
 	for id, cs := range byChannel {
 		metrics = append(metrics, source.Metric{
 			Source: s.Name(),
@@ -108,7 +115,33 @@ func (s *Source) Collect(ctx context.Context, w source.TimeWindow) ([]source.Met
 			},
 		})
 	}
+	// Per-hour histogram, separate from per-channel rows so channel cardinality
+	// stays flat. Hour is the local-time hour the message was sent.
+	for h, n := range byHour {
+		metrics = append(metrics, source.Metric{
+			Source:     s.Name(),
+			Name:       "messages_by_hour",
+			Value:      float64(n),
+			Window:     w,
+			Dimensions: map[string]string{"hour": fmt.Sprintf("%02d", h)},
+		})
+	}
 	return metrics, nil
+}
+
+// messageHour parses a Slack message ts ("1700000000.000200") and returns the
+// local-time hour (0-23) it was sent. ok is false if the ts can't be parsed.
+func messageHour(ts string) (int, bool) {
+	dot := strings.IndexByte(ts, '.')
+	secsStr := ts
+	if dot >= 0 {
+		secsStr = ts[:dot]
+	}
+	secs, err := strconv.ParseInt(secsStr, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return time.Unix(secs, 0).Local().Hour(), true
 }
 
 // channelName returns a display name for the match's channel. For IMs the

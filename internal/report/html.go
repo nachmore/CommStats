@@ -97,6 +97,11 @@ const htmlSource = `<!DOCTYPE html>
         <canvas class="chart-weekday" data-source="{{$si}}"></canvas>
       </div>
 
+      <div class="card">
+        <h3>Avg messages sent per day, by hour</h3>
+        <canvas class="chart-hour" data-source="{{$si}}"></canvas>
+      </div>
+
       <div class="card full">
         <div class="controls">
           <label>Top lists range:
@@ -137,6 +142,13 @@ const htmlSource = `<!DOCTYPE html>
         <thead><tr><th>weekday</th><th>total</th><th>avg/day</th></tr></thead>
         <tbody>
           {{range $s.Weekdays}}<tr><td>{{.Weekday}}</td><td>{{num .Total}}</td><td>{{num .Avg}}</td></tr>{{end}}
+        </tbody>
+      </table>
+      <h3>By hour of day</h3>
+      <table>
+        <thead><tr><th>hour</th><th>total</th><th>avg/day</th></tr></thead>
+        <tbody>
+          {{range $s.Hours}}<tr><td>{{printf "%02d:00" .Hour}}</td><td>{{num .Total}}</td><td>{{num .Avg}}</td></tr>{{end}}
         </tbody>
       </table>
       {{range $s.TopRanges}}
@@ -237,12 +249,25 @@ function weekdayConfig(days){
   };
 }
 
+function hourConfig(hours){
+  return {
+    type: "bar",
+    data: {
+      labels: hours.map(h => String(h.hour).padStart(2,"0")),
+      datasets: [{ label: "avg messages/day", data: hours.map(h => h.avg),
+                   backgroundColor: color(0) }]
+    },
+    options: { responsive: true, plugins: { legend: { display: false } },
+               scales: { x: { title: { display: true, text: "hour of day" } } } }
+  };
+}
+
 function initSource(si){
   const s = DATA.sources[si];
   const q = sel => document.querySelector(sel + '[data-source="'+si+'"]');
   const tl = q(".chart-timeline"), st = q(".chart-stacked"),
         dn = q(".chart-doughnut"), tc = q(".chart-top-channels"),
-        td = q(".chart-top-dms"), wd = q(".chart-weekday");
+        td = q(".chart-top-dms"), wd = q(".chart-weekday"), hr = q(".chart-hour");
 
   const cur = () => parseInt(document.querySelector('.period-select[data-source="'+si+'"]').value, 10) || 0;
   const curTop = () => parseInt(document.querySelector('.top-select[data-source="'+si+'"]').value, 10) || 0;
@@ -255,7 +280,8 @@ function initSource(si){
     doughnut:    new Chart(dn, doughnutConfig(s.type_share || [])),
     topChannels: new Chart(tc, topConfig(tr0.channels || [])),
     topDMs:      new Chart(td, topConfig(tr0.dms || [])),
-    weekday:     new Chart(wd, weekdayConfig(s.weekdays || []))
+    weekday:     new Chart(wd, weekdayConfig(s.weekdays || [])),
+    hour:        new Chart(hr, hourConfig(s.hours || []))
   };
 
   document.querySelector('.period-select[data-source="'+si+'"]').addEventListener("change", () => {

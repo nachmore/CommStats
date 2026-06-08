@@ -21,6 +21,7 @@ type SourceDocument struct {
 	Periods   []PeriodSeries `json:"periods"`    // time-series per granularity
 	TypeShare []TypeSlice    `json:"type_share"` // overall channel_type split
 	Weekdays  []WeekdayStat  `json:"weekdays"`   // by day-of-week
+	Hours     []HourStat     `json:"hours"`      // by hour-of-day (local)
 	TopRanges []TopRange     `json:"top_ranges"` // top channels/DMs per lookback window
 }
 
@@ -99,6 +100,7 @@ func BuildDocument(recs []store.Record, generatedAt string, topN int) Document {
 			Periods:   buildPeriodSeries(sr),
 			TypeShare: buildTypeShare(sr),
 			Weekdays:  buildWeekdayStats(sr),
+			Hours:     buildHourStats(sr),
 			TopRanges: buildTopRanges(sr, topN),
 		}
 		doc.Sources = append(doc.Sources, sd)

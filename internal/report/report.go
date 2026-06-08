@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -389,6 +390,74 @@ func RenderWeekday(w io.Writer, recs []store.Record, format Format) error {
 		fmt.Fprintf(w, "  %-10s  %8s  %8s\n", "weekday", "total", "avg/day")
 		for _, s := range stats {
 			fmt.Fprintf(w, "  %-10s  %8s  %8s\n", s.Weekday, fmtVal(s.Total, false), fmtVal(s.Avg, true))
+		}
+	}
+	return nil
+}
+
+// HourStat is messaging volume for one hour of the day (local time),
+// aggregated over the range. Avg divides Total by the number of days in the
+// data span, so it reads as "typical messages sent during this hour per day".
+type HourStat struct {
+	Hour  int     `json:"hour"` // 0-23
+	Total float64 `json:"total"`
+	Avg   float64 `json:"avg"`
+}
+
+// buildHourStats aggregates the messages_by_hour metric across one source's
+// records into a 24-entry histogram (hours 00-23).
+func buildHourStats(recs []store.Record) []HourStat {
+	total := map[int]float64{}
+	days := map[string]struct{}{}
+	for _, r := range recs {
+		if r.Name != "messages_by_hour" {
+			continue
+		}
+		h, err := strconv.Atoi(r.Dimensions["hour"])
+		if err != nil || h < 0 || h > 23 {
+			continue
+		}
+		total[h] += r.Value
+		days[r.Day.Format("2006-01-02")] = struct{}{}
+	}
+
+	nDays := len(days)
+	out := make([]HourStat, 0, 24)
+	for h := 0; h < 24; h++ {
+		avg := 0.0
+		if nDays > 0 {
+			avg = total[h] / float64(nDays)
+		}
+		out = append(out, HourStat{Hour: h, Total: total[h], Avg: avg})
+	}
+	return out
+}
+
+// RenderHour writes a by-hour-of-day section (one per source) to w.
+func RenderHour(w io.Writer, recs []store.Record, format Format) error {
+	bySource := map[string][]store.Record{}
+	for _, r := range recs {
+		bySource[r.Source] = append(bySource[r.Source], r)
+	}
+	srcs := make([]string, 0, len(bySource))
+	for s := range bySource {
+		srcs = append(srcs, s)
+	}
+	sort.Strings(srcs)
+
+	for _, src := range srcs {
+		stats := buildHourStats(bySource[src])
+		if format == Markdown {
+			fmt.Fprintf(w, "\n### %s\n\n| Hour | Total | Avg/day |\n| --- | ---: | ---: |\n", src)
+			for _, s := range stats {
+				fmt.Fprintf(w, "| %02d:00 | %s | %s |\n", s.Hour, fmtVal(s.Total, false), fmtVal(s.Avg, true))
+			}
+			continue
+		}
+		fmt.Fprintf(w, "\n%s\n%s\n", strings.ToUpper(src), strings.Repeat("=", len(src)))
+		fmt.Fprintf(w, "  %-6s  %8s  %8s\n", "hour", "total", "avg/day")
+		for _, s := range stats {
+			fmt.Fprintf(w, "  %02d:00   %8s  %8s\n", s.Hour, fmtVal(s.Total, false), fmtVal(s.Avg, true))
 		}
 	}
 	return nil

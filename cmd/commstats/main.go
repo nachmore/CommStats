@@ -381,6 +381,11 @@ func renderOverview(ctx context.Context, st store.Store, src string, format repo
 		return err
 	}
 
+	writeHeader(format, "By Hour of Day ("+span+")")
+	if err := report.RenderHour(os.Stdout, recs, format); err != nil {
+		return err
+	}
+
 	writeHeader(format, fmt.Sprintf("Top %d Conversations (%s)", top, span))
 	return report.RenderTopChannels(os.Stdout, recs, format, top)
 }
