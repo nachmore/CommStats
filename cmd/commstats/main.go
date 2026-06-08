@@ -25,6 +25,7 @@ import (
 	"github.com/nachmore/commstats/internal/store/sqlite"
 
 	// Comm sources self-register via blank import. Add new sources here.
+	_ "github.com/nachmore/commstats/internal/source/outlook"
 	_ "github.com/nachmore/commstats/internal/source/slack"
 )
 

@@ -19,11 +19,12 @@ func (windowsProvider) Browser() Browser     { return windowsBrowser{} }
 
 type windowsBrowser struct{}
 
-// Open launches target in the default handler via `cmd /c start`.
+// Open launches target in the default handler. We use rundll32's
+// FileProtocolHandler rather than `cmd /c start` because cmd treats "&" as a
+// command separator and mangles URLs with query strings (OAuth authorize URLs
+// are full of "&"); rundll32 receives the URL as a single argument untouched.
 func (windowsBrowser) Open(target string) error {
-	// The empty "" is start's title argument; required when the target is
-	// quoted so start doesn't treat the path as the title.
-	return exec.Command("cmd", "/c", "start", "", target).Start()
+	return exec.Command("rundll32", "url.dll,FileProtocolHandler", target).Start()
 }
 
 // ExecutablePath prefers Edge (present on all modern Windows), then Chrome.
