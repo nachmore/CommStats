@@ -26,6 +26,7 @@ import (
 	// Comm sources self-register via blank import. Add new sources here.
 	_ "github.com/nachmore/commstats/internal/source/outlook"
 	_ "github.com/nachmore/commstats/internal/source/slack"
+	_ "github.com/nachmore/commstats/internal/source/zoom"
 )
 
 // version is the build version, overridden at release time via
