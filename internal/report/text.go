@@ -22,9 +22,9 @@ func RenderText(w io.Writer, doc Document, format Format) error {
 	writeSection(w, md, "Overview")
 	for _, s := range doc.Overview.Sources {
 		if md {
-			fmt.Fprintf(w, "\n**%s**\n\n", s.Source)
+			fmt.Fprintf(w, "\n**%s**\n\n", s.Label)
 		} else {
-			fmt.Fprintf(w, "\n%s\n", strings.ToUpper(s.Source))
+			fmt.Fprintf(w, "\n%s\n", strings.ToUpper(s.Label))
 		}
 		for _, t := range s.Totals {
 			fmt.Fprintf(w, "  %-22s %12s\n", t.Label, fmtNum(t.Value))
@@ -33,7 +33,7 @@ func RenderText(w io.Writer, doc Document, format Format) error {
 
 	// Per-source charts as tables.
 	for _, src := range doc.Sources {
-		writeSection(w, md, src.Source)
+		writeSection(w, md, src.Label)
 		for _, c := range src.Charts {
 			writeChart(w, md, c)
 		}

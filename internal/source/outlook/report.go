@@ -13,6 +13,7 @@ func init() {
 // emailReporter curates the email report tab.
 type emailReporter struct{}
 
+func (emailReporter) AppName() string       { return "Outlook" }
 func (emailReporter) PrimaryMetric() string { return "emails_sent" }
 
 // HourMetric contributes received-email volume to the combined hours chart.
@@ -46,6 +47,7 @@ func (emailReporter) Charts(recs []store.Record, topN int) []report.Chart {
 // — only the size partition is the canonical headcount.
 type calendarReporter struct{}
 
+func (calendarReporter) AppName() string       { return "Outlook" }
 func (calendarReporter) PrimaryMetric() string { return "meeting_minutes" }
 
 // HourMetric contributes meeting start-hour volume to the combined chart.

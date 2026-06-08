@@ -148,7 +148,7 @@ function renderOverview(panel) {
   const hl = el("div", "headlines");
   (ov.sources || []).forEach(s => {
     const card = el("div", "headline");
-    card.appendChild(el("h4", null, s.source));
+    card.appendChild(el("h4", null, s.label || s.source));
     (s.totals || []).forEach(t => {
       const row = el("div", "row");
       row.appendChild(el("span", null, t.label));
@@ -197,17 +197,52 @@ function addTab(name, render) {
   return { tab, panel };
 }
 
-if (window.Chart) {
-  const first = addTab("Overview", renderOverview);
-  (DATA.sources || []).forEach(s => {
-    addTab(s.source, panel => {
+const first = addTab("Overview", renderOverview);
+(DATA.sources || []).forEach(s => {
+  addTab(s.label || s.source, panel => {
+    if (window.Chart) {
       const grid = el("div", "grid");
       panel.appendChild(grid);
       (s.charts || []).forEach(c => renderChart(grid, c));
-    });
+    }
+    renderTables(panel, s);
   });
-  first.tab.classList.add("active");
-  first.panel.classList.add("active");
+});
+first.tab.classList.add("active");
+first.panel.classList.add("active");
+
+// renderTables appends a collapsed <details> with each chart's underlying
+// numbers as a table — a raw-data view and a fallback when charts don't load.
+function renderTables(panel, s) {
+  const det = el("details");
+  const open = !window.Chart; // expanded when charts are unavailable
+  if (open) det.setAttribute("open", "");
+  det.appendChild(el("summary", null, "Raw data tables"));
+  (s.charts || []).forEach(c => {
+    det.appendChild(el("h3", null, c.title));
+    if (c.kind === "series") {
+      const p = (c.periods || [])[0] || { labels: [], data: [] };
+      det.appendChild(kvTable("bucket", "value", (p.labels||[]).map((l,i)=>[l, (p.data||[])[i]])));
+    } else {
+      const rows = (c.bars || c.top || []).map(b => [b.label, b.value]);
+      det.appendChild(kvTable(c.kind === "topn" ? "name" : "bucket", "count", rows));
+    }
+  });
+  panel.appendChild(det);
+}
+
+function kvTable(kHead, vHead, rows) {
+  const t = el("table");
+  t.innerHTML = "<thead><tr><th>"+kHead+"</th><th>"+vHead+"</th></tr></thead>";
+  const tb = el("tbody");
+  rows.forEach(r => {
+    const tr = el("tr");
+    tr.appendChild(el("td", null, String(r[0])));
+    tr.appendChild(el("td", null, Math.round(r[1]).toLocaleString()));
+    tb.appendChild(tr);
+  });
+  t.appendChild(tb);
+  return t;
 }
 </script>
 </body>

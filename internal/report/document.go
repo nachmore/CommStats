@@ -26,9 +26,10 @@ type Overview struct {
 }
 
 // SourceHeadline is a compact per-source summary for the overview tab: the
-// total of each scalar metric over the whole range.
+// total of each scalar metric over the whole range. Label is app-qualified.
 type SourceHeadline struct {
 	Source string         `json:"source"`
+	Label  string         `json:"label"`
 	Totals []LabeledValue `json:"totals"`
 }
 
@@ -50,9 +51,11 @@ type NamedSeries struct {
 	Data []float64 `json:"data"`
 }
 
-// SourceTab is one source's collection of charts.
+// SourceTab is one source's collection of charts. Source is the stable key;
+// Label is the display name, qualified with the app (e.g. "email (Outlook)").
 type SourceTab struct {
 	Source string  `json:"source"`
+	Label  string  `json:"label"`
 	Charts []Chart `json:"charts"`
 }
 
@@ -102,7 +105,7 @@ func BuildDocument(recs []store.Record, generatedAt string, topN int) Document {
 	// Per-source tabs: a registered curated Reporter wins; otherwise fall back
 	// to generic shape-based classification.
 	for _, src := range srcOrder {
-		tab := SourceTab{Source: src}
+		tab := SourceTab{Source: src, Label: sourceLabel(src)}
 		if r, ok := reporterFor(src); ok {
 			tab.Charts = r.Charts(recsBySource[src], topN)
 		} else {
@@ -230,7 +233,7 @@ func topNBars(g MetricGroup, n int) []LabeledValue {
 func buildOverview(recsBySource map[string][]store.Record, srcOrder []string) Overview {
 	var ov Overview
 	for _, src := range srcOrder {
-		h := SourceHeadline{Source: src}
+		h := SourceHeadline{Source: src, Label: sourceLabel(src)}
 		if r, ok := reporterFor(src); ok {
 			h.Totals = r.Headline(recsBySource[src])
 		} else {

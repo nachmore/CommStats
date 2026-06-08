@@ -2,6 +2,7 @@ package report
 
 import (
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/nachmore/commstats/internal/store"
@@ -19,6 +20,28 @@ import (
 type Reporter interface {
 	Charts(recs []store.Record, topN int) []Chart
 	Headline(recs []store.Record) []LabeledValue
+}
+
+// AppNamer lets a source declare the application its medium comes from, so
+// labels can read "medium (App)" — e.g. email and calendar both surface as
+// coming from Outlook.
+type AppNamer interface {
+	AppName() string
+}
+
+// sourceLabel returns "<source> (<App>)" when the source's reporter declares an
+// app name, else just the source.
+func sourceLabel(source string) string {
+	if r, ok := reporterFor(source); ok {
+		if an, ok := r.(AppNamer); ok {
+			// Skip the qualifier when it would just repeat the source name
+			// (e.g. "slack (Slack)") — only add it when it adds information.
+			if app := an.AppName(); app != "" && !strings.EqualFold(app, source) {
+				return source + " (" + app + ")"
+			}
+		}
+	}
+	return source
 }
 
 var (

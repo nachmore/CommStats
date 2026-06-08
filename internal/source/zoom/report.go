@@ -12,6 +12,7 @@ func init() { report.RegisterReporter("zoom", zoomReporter{}) }
 // breakdowns, and by-hour/weekday.
 type zoomReporter struct{}
 
+func (zoomReporter) AppName() string       { return "Zoom" }
 func (zoomReporter) PrimaryMetric() string { return "zoom_minutes" }
 func (zoomReporter) HourMetric() string    { return "meetings_by_hour" }
 

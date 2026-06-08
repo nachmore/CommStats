@@ -13,6 +13,8 @@ func init() { report.RegisterReporter("slack", slackReporter{}) }
 // using the shared chart builders.
 type slackReporter struct{}
 
+func (slackReporter) AppName() string { return "Slack" }
+
 // PrimaryMetric is Slack's activity line for the cross-source overview.
 func (slackReporter) PrimaryMetric() string { return "messages" }
 
