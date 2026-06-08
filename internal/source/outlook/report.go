@@ -15,6 +15,9 @@ type emailReporter struct{}
 
 func (emailReporter) PrimaryMetric() string { return "emails_sent" }
 
+// HourMetric contributes received-email volume to the combined hours chart.
+func (emailReporter) HourMetric() string { return "emails_received_by_hour" }
+
 func (emailReporter) Headline(recs []store.Record) []report.LabeledValue {
 	return []report.LabeledValue{
 		{Label: "received", Value: report.SumValues(report.WithMetric(recs, "emails_received"))},
@@ -32,6 +35,8 @@ func (emailReporter) Charts(recs []store.Record, topN int) []report.Chart {
 		report.ScalarSeriesChart("emails unread", report.WithMetric(recs, "emails_unread")),
 		report.WeekdayChart("avg emails received/day by weekday", report.WithMetric(recs, "emails_received")),
 		report.WeekdayChart("avg emails sent/day by weekday", report.WithMetric(recs, "emails_sent")),
+		report.OrderedChart("emails received by hour", "hour", report.WithMetric(recs, "emails_received_by_hour")),
+		report.OrderedChart("emails sent by hour", "hour", report.WithMetric(recs, "emails_sent_by_hour")),
 	}
 }
 
@@ -42,6 +47,9 @@ func (emailReporter) Charts(recs []store.Record, topN int) []report.Chart {
 type calendarReporter struct{}
 
 func (calendarReporter) PrimaryMetric() string { return "meeting_minutes" }
+
+// HourMetric contributes meeting start-hour volume to the combined chart.
+func (calendarReporter) HourMetric() string { return "meetings_by_hour" }
 
 func (calendarReporter) Headline(recs []store.Record) []report.LabeledValue {
 	meetingCount := report.SumValues(withDim(report.WithMetric(recs, "meetings"), "size"))
@@ -65,6 +73,7 @@ func (calendarReporter) Charts(recs []store.Record, topN int) []report.Chart {
 		report.ScalarSeriesChart("meeting minutes", report.WithMetric(recs, "meeting_minutes")),
 		report.ScalarSeriesChart("overbookings", report.WithMetric(recs, "calendar_overbookings")),
 		report.WeekdayChart("avg meeting minutes/day by weekday", report.WithMetric(recs, "meeting_minutes")),
+		report.OrderedChart("meetings by hour", "hour", report.WithMetric(recs, "meetings_by_hour")),
 	}
 }
 

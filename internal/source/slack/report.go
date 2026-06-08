@@ -16,6 +16,9 @@ type slackReporter struct{}
 // PrimaryMetric is Slack's activity line for the cross-source overview.
 func (slackReporter) PrimaryMetric() string { return "messages" }
 
+// HourMetric contributes Slack's hourly message volume to the combined chart.
+func (slackReporter) HourMetric() string { return "messages_by_hour" }
+
 // Headline totals shown on the overview tab.
 func (slackReporter) Headline(recs []store.Record) []report.LabeledValue {
 	msgs := report.WithMetric(recs, "messages")

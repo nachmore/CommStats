@@ -106,6 +106,27 @@ func (s *Source) Collect(ctx context.Context, w source.TimeWindow) ([]source.Met
 		email("emails_sent", sent),
 	}
 
+	// Email hour-of-day histograms (received + sent), so the overview can show
+	// combined cross-source busiest hours.
+	dStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
+	dEnd := dStart.AddDate(0, 0, 1)
+	recvHours, err := c.messageHours(ctx, "inbox", "ReceivedDateTime", dStart, dEnd)
+	if err != nil {
+		return nil, err
+	}
+	sentHours, err := c.messageHours(ctx, "sentitems", "SentDateTime", dStart, dEnd)
+	if err != nil {
+		return nil, err
+	}
+	for h, n := range recvHours {
+		metrics = append(metrics, source.Metric{Source: sourceEmail, Name: "emails_received_by_hour",
+			Value: float64(n), Window: w, Dimensions: map[string]string{"hour": fmt.Sprintf("%02d", h)}})
+	}
+	for h, n := range sentHours {
+		metrics = append(metrics, source.Metric{Source: sourceEmail, Name: "emails_sent_by_hour",
+			Value: float64(n), Window: w, Dimensions: map[string]string{"hour": fmt.Sprintf("%02d", h)}})
+	}
+
 	// Rich calendar metrics: fetch the day's events and bucket them.
 	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
 	events, err := c.calendarEvents(ctx, dayStart, dayStart.AddDate(0, 0, 1))

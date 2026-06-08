@@ -159,19 +159,22 @@ function renderOverview(panel) {
   });
   panel.appendChild(hl);
 
-  // Combined weekday activity.
-  const wd = ov.weekday || { labels: [], datasets: [] };
+  // Combined activity charts (weekday + hour), stacked per source.
   const grid = el("div", "grid");
-  const card = el("div", "card wide");
-  card.appendChild(el("h3", null, "Activity by day of week (per source)"));
-  const cv = makeCanvas(card);
-  charts.push(new Chart(cv, {
-    type: "bar",
-    data: { labels: wd.labels || [],
-      datasets: (wd.datasets || []).map((d, i) => ({ label: d.name, data: d.data, backgroundColor: color(i) })) },
-    options: { responsive: true, scales: { x: { stacked: true }, y: { stacked: true } } }
-  }));
-  grid.appendChild(card);
+  const stacked = (title, series) => {
+    const card = el("div", "card wide");
+    card.appendChild(el("h3", null, title));
+    const cv = makeCanvas(card);
+    charts.push(new Chart(cv, {
+      type: "bar",
+      data: { labels: (series && series.labels) || [],
+        datasets: ((series && series.datasets) || []).map((d, i) => ({ label: d.name, data: d.data, backgroundColor: color(i) })) },
+      options: { responsive: true, scales: { x: { stacked: true }, y: { stacked: true } } }
+    }));
+    grid.appendChild(card);
+  };
+  stacked("Activity by day of week (per source)", ov.weekday);
+  stacked("Activity by hour of day (per source)", ov.hour);
   panel.appendChild(grid);
 }
 

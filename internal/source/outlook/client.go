@@ -148,6 +148,53 @@ func (c *client) calendarEvents(ctx context.Context, start, end time.Time) ([]ev
 	return out, nil
 }
 
+// messageHours fetches the messages in a folder for [start, end) selecting only
+// the given datetime field, and returns a count per local hour (0-23). Used for
+// email send/receive hour histograms, which the $count API can't provide.
+func (c *client) messageHours(ctx context.Context, folder, dateField string, start, end time.Time) (map[int]int, error) {
+	q := url.Values{}
+	q.Set("$filter", fmt.Sprintf("%s ge %s and %s lt %s",
+		dateField, outlookTime(start), dateField, outlookTime(end)))
+	q.Set("$select", dateField)
+	q.Set("$top", "100")
+	next := apiBase + "/me/mailfolders/" + folder + "/messages?" + q.Encode()
+
+	hours := map[int]int{}
+	for next != "" {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, next, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("Accept", "application/json")
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("outlook messages %s: %w", folder, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, fmt.Errorf("outlook messages %s: HTTP %d", folder, resp.StatusCode)
+		}
+		var page struct {
+			Value []map[string]any `json:"value"`
+			Next  string           `json:"@odata.nextLink"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&page)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("outlook messages decode: %w", err)
+		}
+		for _, m := range page.Value {
+			s, _ := m[dateField].(string)
+			if t, err := time.Parse(time.RFC3339, s); err == nil {
+				hours[t.Local().Hour()]++
+			}
+		}
+		next = page.Next
+	}
+	return hours, nil
+}
+
 // parseEventTime parses the Outlook event datetime ("2006-01-02T15:04:05.000…")
 // which CalendarView returns in UTC, into a time.Time (UTC).
 func parseEventTime(s string) (time.Time, bool) {

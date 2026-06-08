@@ -22,6 +22,7 @@ type Document struct {
 type Overview struct {
 	Sources []SourceHeadline `json:"sources"` // per-source headline totals
 	Weekday StackedSeries    `json:"weekday"` // combined activity by weekday
+	Hour    StackedSeries    `json:"hour"`    // combined activity by hour-of-day
 }
 
 // SourceHeadline is a compact per-source summary for the overview tab: the
@@ -238,7 +239,52 @@ func buildOverview(recsBySource map[string][]store.Record, srcOrder []string) Ov
 		ov.Sources = append(ov.Sources, h)
 	}
 	ov.Weekday = combinedWeekday(recsBySource, srcOrder)
+	ov.Hour = combinedHour(recsBySource, srcOrder)
 	return ov
+}
+
+// HourMetricer lets a curated source declare an hour-bucketed metric (with a
+// numeric "hour" dimension) to contribute to the overview's combined busiest-
+// hours chart.
+type HourMetricer interface {
+	HourMetric() string
+}
+
+// combinedHour builds a 0–23 activity chart with one dataset per source that
+// declares an HourMetric, summing that metric's values per hour.
+func combinedHour(recsBySource map[string][]store.Record, srcOrder []string) StackedSeries {
+	ss := StackedSeries{}
+	for h := 0; h < 24; h++ {
+		ss.Labels = append(ss.Labels, padNum(h))
+	}
+	for _, src := range srcOrder {
+		r, ok := reporterFor(src)
+		if !ok {
+			continue
+		}
+		hm, ok := r.(HourMetricer)
+		if !ok {
+			continue
+		}
+		metric := hm.HourMetric()
+		hours := make([]float64, 24)
+		found := false
+		for _, rec := range recsBySource[src] {
+			if rec.Name != metric {
+				continue
+			}
+			h, err := strconv.Atoi(rec.Dimensions["hour"])
+			if err != nil || h < 0 || h > 23 {
+				continue
+			}
+			hours[h] += rec.Value
+			found = true
+		}
+		if found {
+			ss.Datasets = append(ss.Datasets, NamedSeries{Name: src, Data: hours})
+		}
+	}
+	return ss
 }
 
 // genericHeadline sums each dimensionless scalar metric for sources without a

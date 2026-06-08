@@ -1,6 +1,7 @@
 package outlook
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 		byResponse = map[string]int{}
 		byCategory = map[string]int{}
 		byScope    = map[string]int{} // internal / external
+		byHour     = map[int]int{}    // meeting start hour (local)
 		totalMin   float64
 	)
 
@@ -85,6 +87,9 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 			} else {
 				byScope["internal"]++
 			}
+			if okS {
+				byHour[st.Local().Hour()]++
+			}
 			totalMin += dur.Minutes()
 		}
 
@@ -118,6 +123,10 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 	add("meetings", byResponse, "response")
 	add("meetings", byScope, "scope")
 	add("meetings", byCategory, "category")
+	// Meeting start hour (local), as its own ordered histogram metric.
+	for h, v := range byHour {
+		metrics = append(metrics, src("meetings_by_hour", v, map[string]string{"hour": fmt.Sprintf("%02d", h)}))
+	}
 	metrics = append(metrics,
 		source.Metric{Source: srcName, Name: "meeting_minutes", Value: totalMin, Window: w},
 		source.Metric{Source: srcName, Name: "calendar_overbookings", Value: float64(overbooked), Window: w},
