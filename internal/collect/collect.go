@@ -21,13 +21,17 @@ type Result struct {
 
 // Run collects from every registered source over window and upserts results.
 // One source failing does not abort the others; its error is returned in the
-// corresponding Result.
-func Run(ctx context.Context, st store.Store, window source.TimeWindow) []Result {
+// corresponding Result. If only is non-empty, only the plugin with that
+// registration name is collected.
+func Run(ctx context.Context, st store.Store, window source.TimeWindow, only string) []Result {
 	day := dayOf(window.End)
 	srcs := source.Registered()
 	results := make([]Result, 0, len(srcs))
 
 	for _, s := range srcs {
+		if only != "" && s.Name() != only {
+			continue
+		}
 		res := Result{Source: s.Name()}
 		metrics, err := s.Collect(ctx, window)
 		if err != nil {

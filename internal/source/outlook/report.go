@@ -5,49 +5,63 @@ import (
 	"github.com/nachmore/commstats/internal/store"
 )
 
-func init() { report.RegisterReporter("outlook", outlookReporter{}) }
+func init() {
+	report.RegisterReporter(sourceEmail, emailReporter{})
+	report.RegisterReporter(sourceCalendar, calendarReporter{})
+}
 
-// outlookReporter curates Outlook's report tab. The "meetings" metric is
-// emitted as several independent partitions (by size, duration, role, response,
-// scope, category) of the same events, so summing all meetings rows would
-// multi-count — only the size partition is the canonical headcount.
-type outlookReporter struct{}
+// emailReporter curates the email report tab.
+type emailReporter struct{}
 
-// PrimaryMetric: emails sent is Outlook's activity line for the overview.
-func (outlookReporter) PrimaryMetric() string { return "emails_sent" }
+func (emailReporter) PrimaryMetric() string { return "emails_sent" }
 
-func (outlookReporter) Headline(recs []store.Record) []report.LabeledValue {
-	meetings := report.WithMetric(recs, "meetings")
-	// Canonical meeting count = total across the size partition only.
-	meetingCount := report.SumValues(withDim(meetings, "size"))
+func (emailReporter) Headline(recs []store.Record) []report.LabeledValue {
 	return []report.LabeledValue{
-		{Label: "emails received", Value: report.SumValues(report.WithMetric(recs, "emails_received"))},
-		{Label: "emails sent", Value: report.SumValues(report.WithMetric(recs, "emails_sent"))},
-		{Label: "emails read", Value: report.SumValues(report.WithMetric(recs, "emails_read"))},
+		{Label: "received", Value: report.SumValues(report.WithMetric(recs, "emails_received"))},
+		{Label: "sent", Value: report.SumValues(report.WithMetric(recs, "emails_sent"))},
+		{Label: "read", Value: report.SumValues(report.WithMetric(recs, "emails_read"))},
+		{Label: "unread", Value: report.SumValues(report.WithMetric(recs, "emails_unread"))},
+	}
+}
+
+func (emailReporter) Charts(recs []store.Record, topN int) []report.Chart {
+	return []report.Chart{
+		report.ScalarSeriesChart("emails received", report.WithMetric(recs, "emails_received")),
+		report.ScalarSeriesChart("emails sent", report.WithMetric(recs, "emails_sent")),
+		report.ScalarSeriesChart("emails read", report.WithMetric(recs, "emails_read")),
+		report.ScalarSeriesChart("emails unread", report.WithMetric(recs, "emails_unread")),
+		report.WeekdayChart("avg emails received/day by weekday", report.WithMetric(recs, "emails_received")),
+		report.WeekdayChart("avg emails sent/day by weekday", report.WithMetric(recs, "emails_sent")),
+	}
+}
+
+// calendarReporter curates the calendar report tab. The "meetings" metric is
+// emitted as several independent partitions (size/duration/role/response/scope/
+// category) of the same events, so summing all meetings rows would multi-count
+// — only the size partition is the canonical headcount.
+type calendarReporter struct{}
+
+func (calendarReporter) PrimaryMetric() string { return "meeting_minutes" }
+
+func (calendarReporter) Headline(recs []store.Record) []report.LabeledValue {
+	meetingCount := report.SumValues(withDim(report.WithMetric(recs, "meetings"), "size"))
+	return []report.LabeledValue{
+		{Label: "events", Value: report.SumValues(report.WithMetric(recs, "calendar_events"))},
 		{Label: "meetings", Value: meetingCount},
 		{Label: "meeting minutes", Value: report.SumValues(report.WithMetric(recs, "meeting_minutes"))},
 		{Label: "overbookings", Value: report.SumValues(report.WithMetric(recs, "calendar_overbookings"))},
 	}
 }
 
-func (outlookReporter) Charts(recs []store.Record, topN int) []report.Chart {
+func (calendarReporter) Charts(recs []store.Record, topN int) []report.Chart {
 	meetings := report.WithMetric(recs, "meetings")
-
 	return []report.Chart{
-		// Email volume over time.
-		report.ScalarSeriesChart("emails received", report.WithMetric(recs, "emails_received")),
-		report.ScalarSeriesChart("emails sent", report.WithMetric(recs, "emails_sent")),
-		report.ScalarSeriesChart("emails read", report.WithMetric(recs, "emails_read")),
-
-		// Meeting breakdowns (each its own partition of the events).
 		report.BreakdownChart("meetings by size", "size", withDim(meetings, "size")),
 		report.BreakdownChart("meetings by duration", "duration", withDim(meetings, "duration")),
 		report.BreakdownChart("meetings by role", "role", withDim(meetings, "role")),
-		report.BreakdownChart("meetings by response", "response", withDim(meetings, "response")),
+		report.BreakdownChart("my response", "response", withDim(meetings, "response")),
 		report.BreakdownChart("internal vs external", "scope", withDim(meetings, "scope")),
 		report.BreakdownChart("meetings by category", "category", withDim(meetings, "category")),
-
-		// Calendar load over time.
 		report.ScalarSeriesChart("meeting minutes", report.WithMetric(recs, "meeting_minutes")),
 		report.ScalarSeriesChart("overbookings", report.WithMetric(recs, "calendar_overbookings")),
 		report.WeekdayChart("avg meeting minutes/day by weekday", report.WithMetric(recs, "meeting_minutes")),

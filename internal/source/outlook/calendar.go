@@ -54,10 +54,12 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 			}
 		}
 
-		// Shape: all-day, personal block (no other attendees), or a sized
-		// meeting by headcount (self + others).
+		// Shape: all-day (split by whether it holds busy time), personal block
+		// (no other attendees), or a sized meeting by headcount (self + others).
 		shape := ""
 		switch {
+		case e.IsAllDay && free:
+			shape = "all-day-free" // e.g. an informational all-day banner
 		case e.IsAllDay:
 			shape = "all-day"
 		case others == 0:

@@ -11,10 +11,21 @@ import (
 
 func init() { source.Register(New()) }
 
+// The Outlook plugin collects two logically distinct comm mediums from one
+// Microsoft 365 session. They're stored (and reported) under separate source
+// names so email and calendar get their own report tabs, even though a single
+// plugin handles login/collection.
+const (
+	sourceEmail    = "email"
+	sourceCalendar = "calendar"
+)
+
 type Source struct{}
 
 func New() *Source { return &Source{} }
 
+// Name is the plugin/registration name; emitted metrics use the per-medium
+// source names above.
 func (*Source) Name() string { return "outlook" }
 
 // Login opens Outlook web in a visible browser for the user to sign in, then
@@ -70,8 +81,8 @@ func (s *Source) Collect(ctx context.Context, w source.TimeWindow) ([]source.Met
 	c := newClient(token)
 	day := w.End
 
-	metric := func(name string, v int) source.Metric {
-		return source.Metric{Source: s.Name(), Name: name, Value: float64(v), Window: w}
+	email := func(name string, v int) source.Metric {
+		return source.Metric{Source: sourceEmail, Name: name, Value: float64(v), Window: w}
 	}
 
 	received, err := c.count(ctx, "/me/mailfolders/inbox/messages", dayFilter("ReceivedDateTime", day))
@@ -89,10 +100,10 @@ func (s *Source) Collect(ctx context.Context, w source.TimeWindow) ([]source.Met
 		return nil, err
 	}
 	metrics := []source.Metric{
-		metric("emails_received", received),
-		metric("emails_read", read),
-		metric("emails_unread", received-read),
-		metric("emails_sent", sent),
+		email("emails_received", received),
+		email("emails_read", read),
+		email("emails_unread", received-read),
+		email("emails_sent", sent),
 	}
 
 	// Rich calendar metrics: fetch the day's events and bucket them.
@@ -101,13 +112,15 @@ func (s *Source) Collect(ctx context.Context, w source.TimeWindow) ([]source.Met
 	if err != nil {
 		return nil, err
 	}
-	metrics = append(metrics, metric("calendar_events", len(events)))
+	metrics = append(metrics, source.Metric{
+		Source: sourceCalendar, Name: "calendar_events", Value: float64(len(events)), Window: w,
+	})
 
 	selfAddr, homeOrg, err := getIdentity(ctx, c)
 	if err != nil {
 		return nil, err
 	}
-	metrics = append(metrics, collectCalendar(s.Name(), w, events, selfAddr, homeOrg)...)
+	metrics = append(metrics, collectCalendar(sourceCalendar, w, events, selfAddr, homeOrg)...)
 
 	return metrics, nil
 }

@@ -102,6 +102,7 @@ func runCollect(ctx context.Context, args []string) error {
 	days := fs.Int("days", 0, "collect the most recent N days (0 = gap-fill from last run to today)")
 	from := fs.String("from", "", "backfill start date YYYY-MM-DD (inclusive); overrides --days")
 	to := fs.String("to", "", "backfill end date YYYY-MM-DD (inclusive); defaults to today")
+	only := fs.String("source", "", "collect only this source plugin (e.g. slack, outlook)")
 	fs.Parse(args)
 
 	st, err := openStore(ctx)
@@ -138,7 +139,7 @@ func runCollect(ctx context.Context, args []string) error {
 		window := source.TimeWindow{Start: dayEnd.AddDate(0, 0, -1), End: dayEnd}
 		label := dayEnd.Format("2006-01-02")
 
-		for _, r := range collect.Run(ctx, st, window) {
+		for _, r := range collect.Run(ctx, st, window, *only) {
 			if r.Err != nil {
 				failed = true
 				fmt.Printf("  [%d/%d] %s  %-12s FAILED: %v\n", i+1, len(dayList), label, r.Source, r.Err)
