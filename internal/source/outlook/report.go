@@ -52,7 +52,10 @@ func (calendarReporter) PrimaryMetric() string { return "meeting_minutes" }
 func (calendarReporter) HourMetric() string { return "meetings_by_hour" }
 
 func (calendarReporter) Headline(recs []store.Record) []report.LabeledValue {
-	meetingCount := report.SumValues(withDim(report.WithMetric(recs, "meetings"), "size"))
+	// Canonical meeting count = the role partition, which is emitted only for
+	// real meetings (with other attendees) — unlike the size partition, which
+	// also counts all-day banners and personal blocks.
+	meetingCount := report.SumValues(withDim(report.WithMetric(recs, "meetings"), "role"))
 	return []report.LabeledValue{
 		{Label: "events", Value: report.SumValues(report.WithMetric(recs, "calendar_events"))},
 		{Label: "meetings", Value: meetingCount},
