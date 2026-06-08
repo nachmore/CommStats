@@ -96,27 +96,23 @@ var scalarPeriodPlan = []struct {
 func BuildDocument(recs []store.Record, generatedAt string, topN int) Document {
 	doc := Document{GeneratedAt: generatedAt, Span: spanOf(recs)}
 
-	groups := classify(recs)
+	recsBySource, srcOrder := recordsBySource(recs)
 
-	// Per-source tabs.
-	bySource := map[string][]MetricGroup{}
-	srcOrder := []string{}
-	for _, g := range groups {
-		if _, seen := bySource[g.Source]; !seen {
-			srcOrder = append(srcOrder, g.Source)
-		}
-		bySource[g.Source] = append(bySource[g.Source], g)
-	}
-	sort.Strings(srcOrder)
+	// Per-source tabs: a registered curated Reporter wins; otherwise fall back
+	// to generic shape-based classification.
 	for _, src := range srcOrder {
 		tab := SourceTab{Source: src}
-		for _, g := range bySource[src] {
-			tab.Charts = append(tab.Charts, chartFor(g, topN))
+		if r, ok := reporterFor(src); ok {
+			tab.Charts = r.Charts(recsBySource[src], topN)
+		} else {
+			for _, g := range classify(recsBySource[src]) {
+				tab.Charts = append(tab.Charts, chartFor(g, topN))
+			}
 		}
 		doc.Sources = append(doc.Sources, tab)
 	}
 
-	doc.Overview = buildOverview(recs, groups, srcOrder)
+	doc.Overview = buildOverview(recsBySource, srcOrder)
 	return doc
 }
 
@@ -226,60 +222,59 @@ func topNBars(g MetricGroup, n int) []LabeledValue {
 	return out
 }
 
-// buildOverview produces per-source headline totals (sum of each scalar metric)
-// and a combined weekday-activity chart across sources.
-func buildOverview(recs []store.Record, groups []MetricGroup, srcOrder []string) Overview {
-	// Headlines: sum of each scalar metric per source.
-	scalarTotals := map[string]map[string]float64{} // source -> metric -> total
-	for _, g := range groups {
-		if g.Kind != KindScalar {
-			continue
-		}
-		if scalarTotals[g.Source] == nil {
-			scalarTotals[g.Source] = map[string]float64{}
-		}
-		for _, r := range g.Records {
-			scalarTotals[g.Source][g.Metric] += r.Value
-		}
-	}
+// buildOverview produces per-source headline totals and a combined weekday-
+// activity chart across sources. A source's registered Reporter supplies its
+// own headline figures (it knows which metrics are canonical); otherwise we
+// fall back to summing each dimensionless scalar metric.
+func buildOverview(recsBySource map[string][]store.Record, srcOrder []string) Overview {
 	var ov Overview
 	for _, src := range srcOrder {
 		h := SourceHeadline{Source: src}
-		metrics := scalarTotals[src]
-		for _, m := range sortedKeys(metrics) {
-			h.Totals = append(h.Totals, LabeledValue{Label: m, Value: metrics[m]})
+		if r, ok := reporterFor(src); ok {
+			h.Totals = r.Headline(recsBySource[src])
+		} else {
+			h.Totals = genericHeadline(recsBySource[src])
 		}
 		ov.Sources = append(ov.Sources, h)
 	}
-
-	ov.Weekday = combinedWeekday(recs, srcOrder)
+	ov.Weekday = combinedWeekday(recsBySource, srcOrder)
 	return ov
+}
+
+// genericHeadline sums each dimensionless scalar metric for sources without a
+// curated reporter.
+func genericHeadline(recs []store.Record) []LabeledValue {
+	totals := map[string]float64{}
+	for _, r := range recs {
+		if len(r.Dimensions) == 0 {
+			totals[r.Name] += r.Value
+		}
+	}
+	var out []LabeledValue
+	for _, m := range sortedKeys(totals) {
+		out = append(out, LabeledValue{Label: m, Value: totals[m]})
+	}
+	return out
 }
 
 // combinedWeekday builds a Mon–Sun activity chart with one dataset per source.
 // "Activity" is the source's primary volume metric (the largest scalar by
 // total), so each source contributes a comparable single line.
-func combinedWeekday(recs []store.Record, srcOrder []string) StackedSeries {
-	primary := primaryMetricBySource(recs)
-	bySrcDay := map[string]map[time.Weekday]float64{}
-	for _, r := range recs {
-		if r.Name != primary[r.Source] {
-			continue
-		}
-		if bySrcDay[r.Source] == nil {
-			bySrcDay[r.Source] = map[time.Weekday]float64{}
-		}
-		bySrcDay[r.Source][r.Day.Weekday()] += r.Value
-	}
-
+func combinedWeekday(recsBySource map[string][]store.Record, srcOrder []string) StackedSeries {
 	ss := StackedSeries{}
 	for _, wd := range weekdayOrder {
 		ss.Labels = append(ss.Labels, wd.String()[:3])
 	}
 	for _, src := range srcOrder {
-		day := bySrcDay[src]
-		if day == nil {
+		metric := primaryMetric(src, recsBySource[src])
+		if metric == "" {
 			continue
+		}
+		day := map[time.Weekday]float64{}
+		for _, r := range recsBySource[src] {
+			if r.Name == metric {
+				day[r.Day.Weekday()] += r.Value
+			}
 		}
 		ds := NamedSeries{Name: src}
 		for _, wd := range weekdayOrder {
@@ -290,31 +285,35 @@ func combinedWeekday(recs []store.Record, srcOrder []string) StackedSeries {
 	return ss
 }
 
-// primaryMetricBySource picks each source's highest-volume scalar metric, used
-// as its representative "activity" line in cross-source charts.
-func primaryMetricBySource(recs []store.Record) map[string]string {
-	// Sum scalar (dimensionless) metrics per source+metric.
-	totals := map[string]map[string]float64{}
+// PrimaryMetricer lets a curated source declare its representative volume
+// metric for cross-source "activity" charts. It must be a single-partition
+// metric (one whose records sum cleanly per day, e.g. Slack "messages").
+type PrimaryMetricer interface {
+	PrimaryMetric() string
+}
+
+// primaryMetric returns the metric name to use as a source's activity line:
+// the reporter's declared PrimaryMetric if it implements PrimaryMetricer,
+// otherwise the highest-volume dimensionless scalar metric.
+func primaryMetric(src string, recs []store.Record) string {
+	if r, ok := reporterFor(src); ok {
+		if pm, ok := r.(PrimaryMetricer); ok {
+			return pm.PrimaryMetric()
+		}
+	}
+	totals := map[string]float64{}
 	for _, r := range recs {
-		if len(r.Dimensions) != 0 {
-			continue
+		if len(r.Dimensions) == 0 {
+			totals[r.Name] += r.Value
 		}
-		if totals[r.Source] == nil {
-			totals[r.Source] = map[string]float64{}
-		}
-		totals[r.Source][r.Name] += r.Value
 	}
-	out := map[string]string{}
-	for src, m := range totals {
-		best, bestV := "", -1.0
-		for _, name := range sortedKeys(m) {
-			if m[name] > bestV {
-				best, bestV = name, m[name]
-			}
+	best, bestV := "", -1.0
+	for _, name := range sortedKeys(totals) {
+		if totals[name] > bestV {
+			best, bestV = name, totals[name]
 		}
-		out[src] = best
 	}
-	return out
+	return best
 }
 
 // --- small helpers ---
