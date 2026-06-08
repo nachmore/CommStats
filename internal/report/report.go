@@ -1,32 +1,22 @@
-// Package report renders stored metrics as a terminal summary or Markdown,
-// operating purely on store.Record so it stays source-agnostic.
+// Package report renders stored metrics as terminal, Markdown, or interactive
+// HTML. It operates purely on store.Record and classifies each metric by its
+// shape (see classify.go), so any source's metrics are visualized generically
+// without source-specific rendering code.
 //
-// Slack stores one "messages" record per channel per day, carrying channel_id,
-// channel_name, and channel_type dimensions. From those raw rows the report
-// derives, per time bucket:
-//   - messages_sent  : sum of all per-channel counts
-//   - unique_channels: distinct channel_id within the bucket (a true distinct
-//     count, computed after bucketing — not a daily average)
-//   - messages [channel_type=X]: per-type sums
-//
-// and, over the whole queried range, a top-channels ranking by message volume.
-//
-// Bucket granularity (day/week/month/year) is selected by Period, so the same
-// machinery drives every rollup.
+// This file holds the shared primitives: output format, time-bucket
+// granularity, and the Slack-specific display niceties (channel/DM name
+// formatting and self-detection) that remain useful when labeling entities.
 package report
 
 import (
-	"fmt"
-	"io"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/nachmore/commstats/internal/store"
 )
 
-// Dimension keys used by message records.
+// Dimension keys used by Slack message/channel records, reused for entity
+// labeling (e.g. prefixing channels with # and DMs with @).
 const (
 	dimChannelID   = "channel_id"
 	dimChannelName = "channel_name"
@@ -42,7 +32,7 @@ const (
 	HTML     Format = "html"
 )
 
-// Period is the time-bucket granularity for columns.
+// Period is the time-bucket granularity for scalar time series.
 type Period int
 
 const (
@@ -51,19 +41,6 @@ const (
 	Month
 	Year
 )
-
-func (p Period) avgHeader() string {
-	switch p {
-	case Week:
-		return "Avg/wk"
-	case Month:
-		return "Avg/mo"
-	case Year:
-		return "Avg/yr"
-	default:
-		return "Avg/day"
-	}
-}
 
 // Title is a human label for the period granularity.
 func (p Period) Title() string {
@@ -95,379 +72,9 @@ func bucketOf(t time.Time, p Period) (key, label string) {
 	}
 }
 
-// RenderSummary writes the per-bucket summary matrix (one per source).
-func RenderSummary(w io.Writer, recs []store.Record, format Format, period Period) error {
-	mats := buildSummary(recs, period)
-	switch format {
-	case Markdown:
-		return renderMatrixMarkdown(w, mats, period)
-	default:
-		return renderMatrixTerminal(w, mats, period)
-	}
-}
-
-// matrix is one source's grid: metric rows by time-bucket columns.
-type matrix struct {
-	source string
-	cols   []column
-	rows   []row
-}
-
-type column struct {
-	key   string
-	label string
-}
-
-type row struct {
-	label  string
-	values map[string]float64 // bucket key -> value
-	avg    float64
-}
-
-// bucketAgg accumulates the raw per-channel rows that fall into one source's
-// time bucket, so summary series can be derived with correct semantics.
-type bucketAgg struct {
-	messagesSent float64
-	channelIDs   map[string]struct{}
-	byType       map[string]float64
-}
-
-func newBucketAgg() *bucketAgg {
-	return &bucketAgg{channelIDs: map[string]struct{}{}, byType: map[string]float64{}}
-}
-
-func buildSummary(recs []store.Record, period Period) []matrix {
-	// source -> bucket key -> aggregate
-	bySource := map[string]map[string]*bucketAgg{}
-	// source -> bucket key -> label
-	colsBySource := map[string]map[string]string{}
-
-	for _, r := range recs {
-		if r.Name != "messages" {
-			continue
-		}
-		bk, bl := bucketOf(r.Day, period)
-		if bySource[r.Source] == nil {
-			bySource[r.Source] = map[string]*bucketAgg{}
-			colsBySource[r.Source] = map[string]string{}
-		}
-		agg := bySource[r.Source][bk]
-		if agg == nil {
-			agg = newBucketAgg()
-			bySource[r.Source][bk] = agg
-		}
-		agg.messagesSent += r.Value
-		if id := r.Dimensions[dimChannelID]; id != "" {
-			agg.channelIDs[id] = struct{}{}
-		}
-		agg.byType[r.Dimensions[dimChannelType]] += r.Value
-		colsBySource[r.Source][bk] = bl
-	}
-
-	mats := make([]matrix, 0, len(bySource))
-	for src, buckets := range bySource {
-		cols := sortedColumns(colsBySource[src])
-
-		// Discover the set of channel types present, for stable row ordering.
-		typeSet := map[string]struct{}{}
-		for _, agg := range buckets {
-			for t := range agg.byType {
-				typeSet[t] = struct{}{}
-			}
-		}
-		types := make([]string, 0, len(typeSet))
-		for t := range typeSet {
-			types = append(types, t)
-		}
-		sort.Strings(types)
-
-		m := matrix{source: src, cols: cols}
-		m.rows = append(m.rows,
-			seriesRow("messages_sent", cols, func(bk string) float64 {
-				if a := buckets[bk]; a != nil {
-					return a.messagesSent
-				}
-				return 0
-			}),
-			seriesRow("unique_channels", cols, func(bk string) float64 {
-				if a := buckets[bk]; a != nil {
-					return float64(len(a.channelIDs))
-				}
-				return 0
-			}),
-		)
-		for _, t := range types {
-			t := t
-			m.rows = append(m.rows, seriesRow(
-				fmt.Sprintf("messages [channel_type=%s]", t),
-				cols, func(bk string) float64 {
-					if a := buckets[bk]; a != nil {
-						return a.byType[t]
-					}
-					return 0
-				}))
-		}
-		mats = append(mats, m)
-	}
-	sort.Slice(mats, func(i, j int) bool { return mats[i].source < mats[j].source })
-	return mats
-}
-
-// seriesRow builds a row by evaluating valueAt for each column, with the
-// trailing average taken over every displayed bucket (empty buckets count 0).
-func seriesRow(label string, cols []column, valueAt func(bucketKey string) float64) row {
-	values := make(map[string]float64, len(cols))
-	var sum float64
-	for _, c := range cols {
-		v := valueAt(c.key)
-		values[c.key] = v
-		sum += v
-	}
-	avg := 0.0
-	if len(cols) > 0 {
-		avg = sum / float64(len(cols))
-	}
-	return row{label: label, values: values, avg: avg}
-}
-
-func sortedColumns(buckets map[string]string) []column {
-	cols := make([]column, 0, len(buckets))
-	for k, l := range buckets {
-		cols = append(cols, column{key: k, label: l})
-	}
-	sort.Slice(cols, func(i, j int) bool { return cols[i].key < cols[j].key })
-	return cols
-}
-
-func renderMatrixTerminal(w io.Writer, mats []matrix, period Period) error {
-	if len(mats) == 0 {
-		_, err := fmt.Fprintln(w, "No metrics for the selected period.")
-		return err
-	}
-	avgH := period.avgHeader()
-	for _, m := range mats {
-		if _, err := fmt.Fprintf(w, "\n%s\n%s\n", strings.ToUpper(m.source), strings.Repeat("=", len(m.source))); err != nil {
-			return err
-		}
-
-		labelW := len("metric")
-		for _, r := range m.rows {
-			labelW = max(labelW, len(r.label))
-		}
-		colW := make([]int, len(m.cols))
-		for i, c := range m.cols {
-			colW[i] = len(c.label)
-			for _, r := range m.rows {
-				colW[i] = max(colW[i], len(fmtVal(r.values[c.key], false)))
-			}
-		}
-		avgW := len(avgH)
-		for _, r := range m.rows {
-			avgW = max(avgW, len(fmtVal(r.avg, true)))
-		}
-
-		fmt.Fprintf(w, "%-*s", labelW, "metric")
-		for i, c := range m.cols {
-			fmt.Fprintf(w, "  %*s", colW[i], c.label)
-		}
-		fmt.Fprintf(w, "  %*s\n", avgW, avgH)
-
-		for _, r := range m.rows {
-			fmt.Fprintf(w, "%-*s", labelW, r.label)
-			for i, c := range m.cols {
-				fmt.Fprintf(w, "  %*s", colW[i], fmtVal(r.values[c.key], false))
-			}
-			fmt.Fprintf(w, "  %*s\n", avgW, fmtVal(r.avg, true))
-		}
-	}
-	return nil
-}
-
-func renderMatrixMarkdown(w io.Writer, mats []matrix, period Period) error {
-	if len(mats) == 0 {
-		_, err := fmt.Fprintln(w, "\nNo metrics for the selected period.")
-		return err
-	}
-	avgH := period.avgHeader()
-	for _, m := range mats {
-		fmt.Fprintf(w, "\n### %s\n\n", m.source)
-		fmt.Fprint(w, "| Metric |")
-		for _, c := range m.cols {
-			fmt.Fprintf(w, " %s |", c.label)
-		}
-		fmt.Fprintf(w, " %s |\n", avgH)
-
-		fmt.Fprint(w, "| --- |")
-		for range m.cols {
-			fmt.Fprint(w, " ---: |")
-		}
-		fmt.Fprint(w, " ---: |\n")
-
-		for _, r := range m.rows {
-			fmt.Fprintf(w, "| %s |", r.label)
-			for _, c := range m.cols {
-				fmt.Fprintf(w, " %s |", fmtVal(r.values[c.key], false))
-			}
-			fmt.Fprintf(w, " %s |\n", fmtVal(r.avg, true))
-		}
-	}
-	return nil
-}
-
-// WeekdayStat is messaging volume for one weekday, aggregated over the range.
-// Avg divides Total by how many times that weekday occurred in the data's date
-// span — so quiet days correctly pull the average down.
-type WeekdayStat struct {
-	Weekday string  `json:"weekday"`
-	Total   float64 `json:"total"`
-	Avg     float64 `json:"avg"`
-}
-
 var weekdayOrder = [7]time.Weekday{
 	time.Monday, time.Tuesday, time.Wednesday, time.Thursday,
 	time.Friday, time.Saturday, time.Sunday,
-}
-
-// buildWeekdayStats aggregates messages_sent per weekday for one source's
-// records. The average denominator is the count of each weekday across the
-// inclusive span [minDay, maxDay], not just days with activity.
-func buildWeekdayStats(recs []store.Record) []WeekdayStat {
-	total := map[time.Weekday]float64{}
-	var minDay, maxDay time.Time
-	for _, r := range recs {
-		if r.Name != "messages" {
-			continue
-		}
-		total[r.Day.Weekday()] += r.Value
-		if minDay.IsZero() || r.Day.Before(minDay) {
-			minDay = r.Day
-		}
-		if maxDay.IsZero() || r.Day.After(maxDay) {
-			maxDay = r.Day
-		}
-	}
-
-	occur := map[time.Weekday]int{}
-	if !minDay.IsZero() {
-		for d := minDay; !d.After(maxDay); d = d.AddDate(0, 0, 1) {
-			occur[d.Weekday()]++
-		}
-	}
-
-	out := make([]WeekdayStat, 0, 7)
-	for _, wd := range weekdayOrder {
-		avg := 0.0
-		if n := occur[wd]; n > 0 {
-			avg = total[wd] / float64(n)
-		}
-		out = append(out, WeekdayStat{Weekday: wd.String(), Total: total[wd], Avg: avg})
-	}
-	return out
-}
-
-// RenderWeekday writes a by-weekday section (one per source) to w.
-func RenderWeekday(w io.Writer, recs []store.Record, format Format) error {
-	bySource := map[string][]store.Record{}
-	for _, r := range recs {
-		bySource[r.Source] = append(bySource[r.Source], r)
-	}
-	srcs := make([]string, 0, len(bySource))
-	for s := range bySource {
-		srcs = append(srcs, s)
-	}
-	sort.Strings(srcs)
-
-	for _, src := range srcs {
-		stats := buildWeekdayStats(bySource[src])
-		if format == Markdown {
-			fmt.Fprintf(w, "\n### %s\n\n| Weekday | Total | Avg/day |\n| --- | ---: | ---: |\n", src)
-			for _, s := range stats {
-				fmt.Fprintf(w, "| %s | %s | %s |\n", s.Weekday, fmtVal(s.Total, false), fmtVal(s.Avg, true))
-			}
-			continue
-		}
-		fmt.Fprintf(w, "\n%s\n%s\n", strings.ToUpper(src), strings.Repeat("=", len(src)))
-		fmt.Fprintf(w, "  %-10s  %8s  %8s\n", "weekday", "total", "avg/day")
-		for _, s := range stats {
-			fmt.Fprintf(w, "  %-10s  %8s  %8s\n", s.Weekday, fmtVal(s.Total, false), fmtVal(s.Avg, true))
-		}
-	}
-	return nil
-}
-
-// HourStat is messaging volume for one hour of the day (local time),
-// aggregated over the range. Avg divides Total by the number of days in the
-// data span, so it reads as "typical messages sent during this hour per day".
-type HourStat struct {
-	Hour  int     `json:"hour"` // 0-23
-	Total float64 `json:"total"`
-	Avg   float64 `json:"avg"`
-}
-
-// buildHourStats aggregates the messages_by_hour metric across one source's
-// records into a 24-entry histogram (hours 00-23).
-func buildHourStats(recs []store.Record) []HourStat {
-	total := map[int]float64{}
-	days := map[string]struct{}{}
-	for _, r := range recs {
-		if r.Name != "messages_by_hour" {
-			continue
-		}
-		h, err := strconv.Atoi(r.Dimensions["hour"])
-		if err != nil || h < 0 || h > 23 {
-			continue
-		}
-		total[h] += r.Value
-		days[r.Day.Format("2006-01-02")] = struct{}{}
-	}
-
-	nDays := len(days)
-	out := make([]HourStat, 0, 24)
-	for h := 0; h < 24; h++ {
-		avg := 0.0
-		if nDays > 0 {
-			avg = total[h] / float64(nDays)
-		}
-		out = append(out, HourStat{Hour: h, Total: total[h], Avg: avg})
-	}
-	return out
-}
-
-// RenderHour writes a by-hour-of-day section (one per source) to w.
-func RenderHour(w io.Writer, recs []store.Record, format Format) error {
-	bySource := map[string][]store.Record{}
-	for _, r := range recs {
-		bySource[r.Source] = append(bySource[r.Source], r)
-	}
-	srcs := make([]string, 0, len(bySource))
-	for s := range bySource {
-		srcs = append(srcs, s)
-	}
-	sort.Strings(srcs)
-
-	for _, src := range srcs {
-		stats := buildHourStats(bySource[src])
-		if format == Markdown {
-			fmt.Fprintf(w, "\n### %s\n\n| Hour | Total | Avg/day |\n| --- | ---: | ---: |\n", src)
-			for _, s := range stats {
-				fmt.Fprintf(w, "| %02d:00 | %s | %s |\n", s.Hour, fmtVal(s.Total, false), fmtVal(s.Avg, true))
-			}
-			continue
-		}
-		fmt.Fprintf(w, "\n%s\n%s\n", strings.ToUpper(src), strings.Repeat("=", len(src)))
-		fmt.Fprintf(w, "  %-6s  %8s  %8s\n", "hour", "total", "avg/day")
-		for _, s := range stats {
-			fmt.Fprintf(w, "  %02d:00   %8s  %8s\n", s.Hour, fmtVal(s.Total, false), fmtVal(s.Avg, true))
-		}
-	}
-	return nil
-}
-
-// channelTotal is one channel's aggregate over the whole queried range.
-type channelTotal struct {
-	name  string
-	typ   string
-	total float64
 }
 
 // isRealChannel reports whether a channel_type is an actual channel (public or
@@ -498,17 +105,15 @@ func DetectSelf(recs []store.Record) {
 	if len(names) < 2 {
 		return
 	}
-
 	count := map[string]int{}
-	seen := map[string]map[string]bool{} // name -> member set, to avoid double-count within one name
 	for _, n := range names {
-		seen[n] = map[string]bool{}
 		body := strings.TrimSuffix(strings.TrimPrefix(n, "mpdm-"), "-1")
+		seen := map[string]bool{}
 		for _, m := range strings.Split(body, "--") {
-			if m == "" || seen[n][m] {
+			if m == "" || seen[m] {
 				continue
 			}
-			seen[n][m] = true
+			seen[m] = true
 			count[m]++
 		}
 	}
@@ -521,9 +126,9 @@ func DetectSelf(recs []store.Record) {
 }
 
 // displayName produces a human label for a conversation:
-//   - real channels  -> "#name"
-//   - group DMs (group-dm) -> "@a, @b, @c" from the members encoded in the name
-//   - direct messages -> the stored "@name" as-is
+//   - real channels    -> "#name"
+//   - group DMs         -> "@a, @b, @c" from members encoded in the name
+//   - direct messages   -> the stored "@name" as-is
 func displayName(name, typ string) string {
 	switch {
 	case isRealChannel(typ):
@@ -547,8 +152,7 @@ func prettyGroupDM(name string) string {
 	if !strings.HasPrefix(name, "mpdm-") {
 		return ""
 	}
-	body := strings.TrimPrefix(name, "mpdm-")
-	body = strings.TrimSuffix(body, "-1") // trailing conversation index
+	body := strings.TrimSuffix(strings.TrimPrefix(name, "mpdm-"), "-1")
 	members := strings.Split(body, "--")
 	out := make([]string, 0, len(members))
 	for _, m := range members {
@@ -561,119 +165,4 @@ func prettyGroupDM(name string) string {
 		return ""
 	}
 	return strings.Join(out, ", ")
-}
-
-// RenderTopChannels writes the top-n channels by message volume over the whole
-// record set, per source.
-func RenderTopChannels(w io.Writer, recs []store.Record, format Format, n int) error {
-	bySource := map[string]map[string]*channelTotal{} // source -> channel_id -> total
-	for _, r := range recs {
-		if r.Name != "messages" {
-			continue
-		}
-		id := r.Dimensions[dimChannelID]
-		if id == "" {
-			continue
-		}
-		if bySource[r.Source] == nil {
-			bySource[r.Source] = map[string]*channelTotal{}
-		}
-		ct := bySource[r.Source][id]
-		if ct == nil {
-			ct = &channelTotal{name: r.Dimensions[dimChannelName], typ: r.Dimensions[dimChannelType]}
-			bySource[r.Source][id] = ct
-		}
-		ct.total += r.Value
-	}
-
-	srcs := make([]string, 0, len(bySource))
-	for s := range bySource {
-		srcs = append(srcs, s)
-	}
-	sort.Strings(srcs)
-
-	for _, src := range srcs {
-		channels, dms := splitChannels(bySource[src], n)
-		if format == Markdown {
-			renderTopMarkdown(w, src, "Top Channels", channels)
-			renderTopMarkdown(w, src, "Top DMs", dms)
-		} else {
-			renderTopTerminal(w, src, "channels", channels)
-			renderTopTerminal(w, src, "DMs", dms)
-		}
-	}
-	return nil
-}
-
-// splitChannels ranks a source's conversations and partitions them into real
-// channels and DMs (direct + group), each capped at n.
-func splitChannels(byID map[string]*channelTotal, n int) (channels, dms []channelTotal) {
-	for _, ct := range byID {
-		if isRealChannel(ct.typ) {
-			channels = append(channels, *ct)
-		} else {
-			dms = append(dms, *ct)
-		}
-	}
-	return capRanked(channels, n), capRanked(dms, n)
-}
-
-func capRanked(all []channelTotal, n int) []channelTotal {
-	sort.Slice(all, func(i, j int) bool {
-		if all[i].total != all[j].total {
-			return all[i].total > all[j].total
-		}
-		return all[i].name < all[j].name
-	})
-	if n > 0 && len(all) > n {
-		all = all[:n]
-	}
-	return all
-}
-
-func renderTopTerminal(w io.Writer, src, kind string, ranked []channelTotal) {
-	heading := strings.ToUpper(src) + " — " + kind
-	fmt.Fprintf(w, "\n%s\n%s\n", heading, strings.Repeat("-", len(heading)))
-	if len(ranked) == 0 {
-		fmt.Fprintf(w, "  (no %s activity)\n", kind)
-		return
-	}
-	nameW := len("name")
-	for _, c := range ranked {
-		nameW = max(nameW, len(displayName(c.name, c.typ)))
-	}
-	fmt.Fprintf(w, "  %-3s  %-*s  %-15s  %s\n", "#", nameW, "name", "type", "messages")
-	for i, c := range ranked {
-		fmt.Fprintf(w, "  %-3d  %-*s  %-15s  %s\n", i+1, nameW, displayName(c.name, c.typ), c.typ, fmtVal(c.total, false))
-	}
-}
-
-func renderTopMarkdown(w io.Writer, src, kind string, ranked []channelTotal) {
-	fmt.Fprintf(w, "\n### %s — %s\n\n", src, kind)
-	if len(ranked) == 0 {
-		fmt.Fprintf(w, "_(no %s activity)_\n", kind)
-		return
-	}
-	fmt.Fprint(w, "| # | Name | Type | Messages |\n| ---: | --- | --- | ---: |\n")
-	for i, c := range ranked {
-		fmt.Fprintf(w, "| %d | %s | %s | %s |\n", i+1, displayName(c.name, c.typ), c.typ, fmtVal(c.total, false))
-	}
-}
-
-// typeFromLabel extracts the channel type from a derived row label of the form
-// "messages [channel_type=X]".
-func typeFromLabel(label string) (string, bool) {
-	const prefix = "messages [channel_type="
-	if !strings.HasPrefix(label, prefix) || !strings.HasSuffix(label, "]") {
-		return "", false
-	}
-	return label[len(prefix) : len(label)-1], true
-}
-
-// fmtVal formats counts as whole numbers; averages keep one decimal.
-func fmtVal(v float64, isAvg bool) string {
-	if isAvg {
-		return fmt.Sprintf("%.1f", v)
-	}
-	return fmt.Sprintf("%.0f", v)
 }

@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/nachmore/commstats/internal/collect"
@@ -211,11 +210,9 @@ var ignoreSet *config.IgnoreSet
 
 func runReport(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("report", flag.ExitOnError)
-	by := fs.String("by", "", "granularity: day|week|month|year (default: all-periods overview)")
-	days := fs.Int("days", 0, "lookback in days for --by (0 = period-appropriate default)")
 	format := fs.String("format", "terminal", "output format: terminal|markdown|html")
 	src := fs.String("source", "", "limit to a single source")
-	top := fs.Int("top", 15, "number of channels in the top-channels section")
+	top := fs.Int("top", 15, "number of entries in top-N sections")
 	out := fs.String("out", "", "output file for --format html (default: ConfigDir/report-DATE.html)")
 	fs.Parse(args)
 
@@ -231,30 +228,24 @@ func runReport(ctx context.Context, args []string) error {
 	}
 	defer st.Close()
 
-	fmtv := report.Format(*format)
-
 	// Warn about ignore entries that matched nothing (likely typos) once the
 	// report has run and every record has been checked against the set.
 	defer warnUnmatchedIgnores()
 
-	// HTML is an interactive, charted view over the full retained range.
-	if fmtv == report.HTML {
-		return runHTMLReport(ctx, st, *src, *top, *out)
-	}
-
-	// Default view: stacked sections for every period granularity + top channels.
-	if *by == "" {
-		return renderOverview(ctx, st, *src, fmtv, *top)
-	}
-
-	period, lookback, err := periodSpec(*by)
+	// One Document drives every output format and every source generically.
+	recs, err := queryRecords(ctx, st, store.Query{Source: *src})
 	if err != nil {
 		return err
 	}
-	if *days > 0 {
-		lookback = *days
+	report.DetectSelf(recs)
+	doc := report.BuildDocument(recs, time.Now().Format("2006-01-02 15:04"), *top)
+
+	switch report.Format(*format) {
+	case report.HTML:
+		return writeHTMLReport(doc, *out)
+	default:
+		return report.RenderText(os.Stdout, doc, report.Format(*format))
 	}
-	return renderSection(ctx, st, *src, fmtv, period, lookback)
 }
 
 // warnUnmatchedIgnores prints a stderr warning for each configured ignore entry
@@ -276,26 +267,15 @@ func queryRecords(ctx context.Context, st store.Store, q store.Query) ([]store.R
 	return ignoreSet.Filter(recs), nil
 }
 
-// runHTMLReport builds the interactive HTML report over all stored data, writes
-// it to a file, and opens it in the default browser.
-func runHTMLReport(ctx context.Context, st store.Store, src string, top int, out string) error {
-	now := time.Now()
-	recs, err := queryRecords(ctx, st, store.Query{Source: src})
-	if err != nil {
-		return err
-	}
-	report.DetectSelf(recs)
-
-	doc := report.BuildDocument(recs, now.Format("2006-01-02 15:04"), top)
-
+// writeHTMLReport renders the Document to an HTML file and opens it.
+func writeHTMLReport(doc report.Document, out string) error {
 	if out == "" {
 		dir := platform.Current().Paths().ConfigDir()
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("create output dir: %w", err)
 		}
-		out = filepath.Join(dir, "report-"+now.Format("2006-01-02")+".html")
+		out = filepath.Join(dir, "report-"+time.Now().Format("2006-01-02")+".html")
 	}
-
 	f, err := os.Create(out)
 	if err != nil {
 		return fmt.Errorf("create report file: %w", err)
@@ -307,114 +287,11 @@ func runHTMLReport(ctx context.Context, st store.Store, src string, top int, out
 	if err := f.Close(); err != nil {
 		return err
 	}
-
 	fmt.Printf("wrote %s\n", out)
 	if err := platform.Current().Browser().Open(out); err != nil {
-		// Opening is best-effort; the file is already written.
 		fmt.Printf("(could not auto-open: %v)\n", err)
 	}
 	return nil
-}
-
-// periodSpec maps a --by value to its report.Period and a default lookback in
-// days that yields a useful number of columns for that granularity.
-func periodSpec(by string) (report.Period, int, error) {
-	switch by {
-	case "day":
-		return report.Day, 14, nil
-	case "week":
-		return report.Week, 56, nil // ~8 weeks
-	case "month":
-		return report.Month, 365, nil // ~12 months
-	case "year":
-		return report.Year, 365 * 3, nil
-	default:
-		return 0, 0, fmt.Errorf("invalid --by %q (want day|week|month|year)", by)
-	}
-}
-
-// renderSection renders a single granularity over the last `days` days.
-func renderSection(ctx context.Context, st store.Store, src string, format report.Format, period report.Period, days int) error {
-	now := time.Now()
-	recs, err := queryRecords(ctx, st, store.Query{
-		Source: src,
-		From:   dayOf(now.AddDate(0, 0, -(days - 1))),
-		To:     dayOf(now),
-	})
-	if err != nil {
-		return err
-	}
-	return report.RenderSummary(os.Stdout, recs, format, period)
-}
-
-// renderOverview stacks daily, weekly, monthly, and yearly summary sections
-// plus a top-channels section into one view — the default report.
-func renderOverview(ctx context.Context, st store.Store, src string, format report.Format, top int) error {
-	if format == report.Markdown {
-		fmt.Fprintf(os.Stdout, "# CommStats Report\n\n_Generated %s_\n", time.Now().Format("2006-01-02 15:04"))
-	}
-	sections := []struct {
-		period report.Period
-		days   int
-	}{
-		{report.Day, 14},
-		{report.Week, 56},
-		{report.Month, 365},
-		{report.Year, 365 * 3},
-	}
-	for _, s := range sections {
-		writeHeader(format, s.period.Title())
-		if err := renderSection(ctx, st, src, format, s.period, s.days); err != nil {
-			return err
-		}
-	}
-
-	// Full-range sections (weekday, top conversations) span all stored data.
-	recs, err := queryRecords(ctx, st, store.Query{Source: src})
-	if err != nil {
-		return err
-	}
-	report.DetectSelf(recs)
-	span := spanLabel(recs)
-
-	writeHeader(format, "By Day of Week ("+span+")")
-	if err := report.RenderWeekday(os.Stdout, recs, format); err != nil {
-		return err
-	}
-
-	writeHeader(format, "By Hour of Day ("+span+")")
-	if err := report.RenderHour(os.Stdout, recs, format); err != nil {
-		return err
-	}
-
-	writeHeader(format, fmt.Sprintf("Top %d Conversations (%s)", top, span))
-	return report.RenderTopChannels(os.Stdout, recs, format, top)
-}
-
-// spanLabel summarizes the date range covered by recs, e.g. "2026-03-10 to
-// 2026-06-08" or "no data".
-func spanLabel(recs []store.Record) string {
-	var lo, hi time.Time
-	for _, r := range recs {
-		if lo.IsZero() || r.Day.Before(lo) {
-			lo = r.Day
-		}
-		if hi.IsZero() || r.Day.After(hi) {
-			hi = r.Day
-		}
-	}
-	if lo.IsZero() {
-		return "no data"
-	}
-	return lo.Format("2006-01-02") + " to " + hi.Format("2006-01-02")
-}
-
-func writeHeader(format report.Format, header string) {
-	if format == report.Markdown {
-		fmt.Fprintf(os.Stdout, "\n## %s\n", header)
-	} else {
-		fmt.Fprintf(os.Stdout, "\n========== %s ==========\n", strings.ToUpper(header))
-	}
 }
 
 func openStore(ctx context.Context) (store.Store, error) {
