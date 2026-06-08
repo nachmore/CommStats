@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nachmore/commstats/internal/collect"
+	"github.com/nachmore/commstats/internal/config"
 	"github.com/nachmore/commstats/internal/platform"
 	"github.com/nachmore/commstats/internal/report"
 	"github.com/nachmore/commstats/internal/source"
@@ -203,6 +204,10 @@ func daysInRange(start, end time.Time) []time.Time {
 	return out
 }
 
+// ignoreSet excludes configured channels/DMs from reports. Loaded once per
+// report invocation and applied to every store query via queryRecords.
+var ignoreSet config.IgnoreSet
+
 func runReport(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("report", flag.ExitOnError)
 	by := fs.String("by", "", "granularity: day|week|month|year (default: all-periods overview)")
@@ -212,6 +217,12 @@ func runReport(ctx context.Context, args []string) error {
 	top := fs.Int("top", 15, "number of channels in the top-channels section")
 	out := fs.String("out", "", "output file for --format html (default: ConfigDir/report-DATE.html)")
 	fs.Parse(args)
+
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	ignoreSet = config.NewIgnoreSet(cfg.Ignore)
 
 	st, err := openStore(ctx)
 	if err != nil {
@@ -241,11 +252,21 @@ func runReport(ctx context.Context, args []string) error {
 	return renderSection(ctx, st, *src, fmtv, period, lookback)
 }
 
+// queryRecords runs a store query and drops any records matching the configured
+// ignore set, so ignored channels/DMs are excluded from every report view.
+func queryRecords(ctx context.Context, st store.Store, q store.Query) ([]store.Record, error) {
+	recs, err := st.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	return ignoreSet.Filter(recs), nil
+}
+
 // runHTMLReport builds the interactive HTML report over all stored data, writes
 // it to a file, and opens it in the default browser.
 func runHTMLReport(ctx context.Context, st store.Store, src string, top int, out string) error {
 	now := time.Now()
-	recs, err := st.Query(ctx, store.Query{Source: src})
+	recs, err := queryRecords(ctx, st, store.Query{Source: src})
 	if err != nil {
 		return err
 	}
@@ -301,7 +322,7 @@ func periodSpec(by string) (report.Period, int, error) {
 // renderSection renders a single granularity over the last `days` days.
 func renderSection(ctx context.Context, st store.Store, src string, format report.Format, period report.Period, days int) error {
 	now := time.Now()
-	recs, err := st.Query(ctx, store.Query{
+	recs, err := queryRecords(ctx, st, store.Query{
 		Source: src,
 		From:   dayOf(now.AddDate(0, 0, -(days - 1))),
 		To:     dayOf(now),
@@ -335,7 +356,7 @@ func renderOverview(ctx context.Context, st store.Store, src string, format repo
 	}
 
 	// Full-range sections (weekday, top conversations) span all stored data.
-	recs, err := st.Query(ctx, store.Query{Source: src})
+	recs, err := queryRecords(ctx, st, store.Query{Source: src})
 	if err != nil {
 		return err
 	}
