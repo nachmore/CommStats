@@ -1,0 +1,281 @@
+# Release workflow.
+#
+# Two channels:
+#   - stable  — triggered by a git tag matching `v*.*.*` (human-initiated).
+#   - nightly — dispatched by ci.yml on every green push to main.
+#
+# Each run builds the commstats binary on Windows + macOS (ARM) + Linux and
+# publishes them to a GitHub Release. The build version is stamped into the
+# binary via -ldflags so `commstats version` reports exactly what shipped.
+#
+# Nightly rotation: keeps `nightly-latest` and `nightly-1` (the previous
+# build, for one-step rollback). Older nightlies are deleted. The nightly
+# release body is an auto-generated changelog of the commits since the last
+# nightly (diffed via the BUILD_SHA.txt asset attached to nightly-1).
+name: Release
+
+run-name: >-
+  Release ${{
+    startsWith(github.ref, 'refs/tags/v') && format('(Stable {0})', github.ref_name)
+    || (github.event.inputs.channel == 'nightly' && '(Nightly)')
+    || ''
+  }}
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel"
+        required: true
+        default: "nightly"
+        type: choice
+        options:
+          - nightly
+          - stable
+      head_sha:
+        description: "Specific SHA to build (optional; defaults to ref HEAD)"
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  # One release per channel. Stable runs queue (never cancel) so a tag race is
+  # never dropped; nightly cancels superseded runs since only the latest counts.
+  group: release-${{ github.event.inputs.channel || 'stable' }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
+jobs:
+  # Resolve channel, the SHA to build, and the version string once, so the
+  # build job (which stamps the binary) and publish job (which names the
+  # release) can't drift.
+  plan:
+    name: Resolve channel
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.pick.outputs.channel }}
+      release_tag: ${{ steps.pick.outputs.release_tag }}
+      release_name: ${{ steps.pick.outputs.release_name }}
+      is_prerelease: ${{ steps.pick.outputs.is_prerelease }}
+      build_sha: ${{ steps.pick.outputs.build_sha }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: pick
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "channel=stable" >> "$GITHUB_OUTPUT"
+            echo "release_tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            echo "release_name=CommStats ${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "build_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            CH="${{ github.event.inputs.channel }}"
+            echo "channel=$CH" >> "$GITHUB_OUTPUT"
+            echo "release_tag=${CH}-latest" >> "$GITHUB_OUTPUT"
+            echo "release_name=CommStats Nightly (latest)" >> "$GITHUB_OUTPUT"
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+            INPUT_SHA="${{ github.event.inputs.head_sha }}"
+            if [[ -n "$INPUT_SHA" ]]; then
+              echo "build_sha=$INPUT_SHA" >> "$GITHUB_OUTPUT"
+            else
+              echo "build_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      # Stable: version is the tag minus the leading v. Nightly: a
+      # monotonically increasing UTC timestamp plus +nightly.<sha> metadata,
+      # e.g. 0.0.202606081430+nightly.abc1234.
+      - id: version
+        shell: bash
+        env:
+          CHANNEL: ${{ steps.pick.outputs.channel }}
+          RELEASE_TAG: ${{ steps.pick.outputs.release_tag }}
+          BUILD_SHA: ${{ steps.pick.outputs.build_sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$CHANNEL" == "stable" ]]; then
+            VERSION="${RELEASE_TAG#v}"
+          else
+            STAMP=$(date -u +%Y%m%d%H%M)
+            SHORT_SHA="$(echo "$BUILD_SHA" | cut -c1-7)"
+            VERSION="0.0.${STAMP}+nightly.${SHORT_SHA}"
+          fi
+          echo "Resolved version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.os }})
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            ext: ".exe"
+            asset: commstats-windows-x86_64.exe
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            ext: ""
+            asset: commstats-macos-aarch64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            ext: ""
+            asset: commstats-linux-x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.build_sha }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+
+      - name: Build
+        shell: bash
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o "staging/${{ matrix.asset }}" \
+            ./cmd/commstats
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: commstats-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: staging/*
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    name: Publish release
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.build_sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect assets
+        env:
+          BUILD_SHA: ${{ needs.plan.outputs.build_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f -name 'commstats-*' -exec cp {} release/ \;
+          # The next nightly diffs its changelog against this SHA.
+          echo -n "$BUILD_SHA" > release/BUILD_SHA.txt
+          ls -la release/
+
+      # Keep only nightly-latest + nightly-1. Delete older -N releases and the
+      # stale -1, then retag the current latest as -1 (preserving its assets).
+      - name: Rotate nightly releases
+        if: needs.plan.outputs.channel == 'nightly'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CH: nightly
+        run: |
+          set -euo pipefail
+          for n in 2 3 4 5; do
+            tag="${CH}-${n}"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              gh release delete "$tag" --yes
+            fi
+          done
+          if gh release view "${CH}-1" >/dev/null 2>&1; then
+            gh release delete "${CH}-1" --yes
+          fi
+          if gh release view "${CH}-latest" >/dev/null 2>&1; then
+            PREV_SHA="$(gh api "repos/${{ github.repository }}/git/refs/tags/${CH}-latest" --jq '.object.sha' 2>/dev/null || true)"
+            if [[ -n "$PREV_SHA" ]]; then
+              gh release edit "${CH}-latest" \
+                --tag "${CH}-1" \
+                --target "$PREV_SHA" \
+                --title "CommStats Nightly (previous)"
+            fi
+          fi
+
+      - name: Move rolling tag
+        if: needs.plan.outputs.channel == 'nightly'
+        env:
+          TAG: ${{ needs.plan.outputs.release_tag }}
+          BUILD_SHA: ${{ needs.plan.outputs.build_sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$TAG" "$BUILD_SHA"
+          git push -f origin "$TAG"
+
+      # Nightly changelog: diff commits between the previous nightly's SHA
+      # (read from the BUILD_SHA.txt asset on nightly-1) and this build.
+      - name: Generate changelog
+        id: changelog
+        if: needs.plan.outputs.channel == 'nightly'
+        env:
+          CH: nightly
+          BUILD_SHA: ${{ needs.plan.outputs.build_sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PREV_SHA=""
+          if PREV_SHA="$(gh release download "${CH}-1" -p BUILD_SHA.txt -O - 2>/dev/null)"; then
+            PREV_SHA="$(echo -n "$PREV_SHA" | tr -d '[:space:]')"
+          fi
+          if [[ -z "$PREV_SHA" ]]; then
+            echo "No previous nightly SHA; falling back to generated notes"
+            exit 0
+          fi
+          if ! git cat-file -e "$PREV_SHA" 2>/dev/null; then
+            git fetch --no-tags origin "$PREV_SHA" || exit 0
+          fi
+          BODY_FILE="$RUNNER_TEMP/release-body.md"
+          {
+            echo "## What's Changed"
+            echo
+            git log --pretty=format:'- %s ([%h](https://github.com/'"${REPO}"'/commit/%H))' \
+              "${PREV_SHA}..${BUILD_SHA}"
+            echo
+            echo
+            echo "**Full Changelog**: https://github.com/${REPO}/compare/${PREV_SHA}...${BUILD_SHA}"
+          } > "$BODY_FILE"
+          if ! grep -q '^- ' "$BODY_FILE"; then
+            echo "Empty diff; falling back to generated notes"
+            exit 0
+          fi
+          echo "body_file=$BODY_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.plan.outputs.release_tag }}
+          name: ${{ needs.plan.outputs.release_name }}
+          prerelease: ${{ needs.plan.outputs.is_prerelease == 'true' }}
+          body_path: ${{ steps.changelog.outputs.body_file }}
+          generate_release_notes: ${{ steps.changelog.outputs.body_file == '' }}
+          files: release/*
+          fail_on_unmatched_files: true

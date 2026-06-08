@@ -27,6 +27,10 @@ import (
 	_ "github.com/nachmore/commstats/internal/source/slack"
 )
 
+// version is the build version, overridden at release time via
+// -ldflags "-X main.version=...". "dev" for local/un-stamped builds.
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -41,6 +45,9 @@ func main() {
 		err = runReport(ctx, os.Args[2:])
 	case "login":
 		err = runLogin(source.WithInteractive(ctx), os.Args[2:])
+	case "version", "--version", "-v":
+		fmt.Println("commstats", version)
+		return
 	case "-h", "--help", "help":
 		usage()
 		return

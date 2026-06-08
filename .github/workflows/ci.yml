@@ -40,3 +40,26 @@ jobs:
 
       - name: go test
         run: go test ./...
+
+  # Auto-publish a nightly release on every green push to main. Dispatches
+  # release.yml with channel=nightly, pinned to the exact CI-verified SHA.
+  auto-release-nightly:
+    name: Auto-publish nightly
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch release.yml with channel=nightly
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          echo "Dispatching release.yml for channel=nightly at ${BUILD_SHA}"
+          gh workflow run release.yml \
+            --repo "${{ github.repository }}" \
+            --ref main \
+            -f channel=nightly \
+            -f head_sha="${BUILD_SHA}"
