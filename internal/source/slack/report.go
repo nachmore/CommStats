@@ -21,13 +21,13 @@ func (slackReporter) PrimaryMetric() string { return "messages" }
 // HourMetric contributes Slack's hourly message volume to the combined chart.
 func (slackReporter) HourMetric() string { return "messages_by_hour" }
 
-// Headline totals shown on the overview tab.
-func (slackReporter) Headline(recs []store.Record) []report.LabeledValue {
+// Headline totals shown on the overview tab (windowed client-side).
+func (slackReporter) Headline(recs []store.Record) []report.HeadlineStat {
 	msgs := report.WithMetric(recs, "messages")
-	return []report.LabeledValue{
-		{Label: "messages", Value: report.SumValues(msgs)},
-		{Label: "unique channels", Value: float64(report.DistinctDim(msgs, "channel_id"))},
-		{Label: "after-hours %", Value: report.AfterHoursPct(report.WithMetric(recs, "messages_by_hour"))},
+	return []report.HeadlineStat{
+		report.SumStat("messages", msgs),
+		report.DistinctStat("unique channels", "channel_id", msgs),
+		report.AfterHoursStat("after-hours %", report.WithMetric(recs, "messages_by_hour")),
 	}
 }
 

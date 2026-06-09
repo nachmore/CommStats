@@ -33,18 +33,28 @@ type SourceActivity struct {
 	Hour    []DayPoint `json:"hour"`
 }
 
-// SourceHeadline is a compact per-source summary for the overview tab: the
-// total of each scalar metric over the whole range. Label is app-qualified.
+// SourceHeadline is a compact per-source summary for the overview tab. Label is
+// app-qualified; Stats carry raw daily points so the client recomputes them for
+// the selected window.
 type SourceHeadline struct {
 	Source string         `json:"source"`
 	Label  string         `json:"label"`
-	Totals []LabeledValue `json:"totals"`
+	Stats  []HeadlineStat `json:"stats"`
 }
 
-// LabeledValue is a name/number pair.
-type LabeledValue struct {
-	Label string  `json:"label"`
-	Value float64 `json:"value"`
+// HeadlineStat is one windowable summary figure. Points are the daily data; the
+// client reduces them over the selected window per Reduce:
+//   - "sum":       total of point values
+//   - "distinct":  count of distinct point keys
+//   - "afterhours": % of value outside business hours / on weekends (points are
+//     hour-keyed, like an hour metric)
+//
+// Pct marks the result as a percentage for display.
+type HeadlineStat struct {
+	Label  string     `json:"label"`
+	Reduce string     `json:"reduce"`
+	Pct    bool       `json:"pct,omitempty"`
+	Points []DayPoint `json:"points"`
 }
 
 // SourceTab is one source's collection of charts. Source is the stable key;
@@ -146,9 +156,9 @@ func buildOverview(recsBySource map[string][]store.Record, srcOrder []string) Ov
 	for _, src := range srcOrder {
 		h := SourceHeadline{Source: src, Label: sourceLabel(src)}
 		if r, ok := reporterFor(src); ok {
-			h.Totals = r.Headline(recsBySource[src])
+			h.Stats = r.Headline(recsBySource[src])
 		} else {
-			h.Totals = genericHeadline(recsBySource[src])
+			h.Stats = genericHeadline(recsBySource[src])
 		}
 		ov.Sources = append(ov.Sources, h)
 		ov.Activity[src] = sourceActivity(src, recsBySource[src])
@@ -189,18 +199,18 @@ type HourMetricer interface {
 	HourMetric() string
 }
 
-// genericHeadline sums each dimensionless scalar metric for sources without a
-// curated reporter.
-func genericHeadline(recs []store.Record) []LabeledValue {
-	totals := map[string]float64{}
+// genericHeadline emits a windowable sum stat for each dimensionless scalar
+// metric, for sources without a curated reporter.
+func genericHeadline(recs []store.Record) []HeadlineStat {
+	byMetric := map[string][]store.Record{}
 	for _, r := range recs {
 		if len(r.Dimensions) == 0 {
-			totals[r.Name] += r.Value
+			byMetric[r.Name] = append(byMetric[r.Name], r)
 		}
 	}
-	var out []LabeledValue
-	for _, m := range sortedKeys(totals) {
-		out = append(out, LabeledValue{Label: m, Value: totals[m]})
+	var out []HeadlineStat
+	for _, m := range sortedKeysS(byMetric) {
+		out = append(out, SumStat(m, byMetric[m]))
 	}
 	return out
 }
@@ -239,6 +249,15 @@ func primaryMetric(src string, recs []store.Record) string {
 // --- small helpers ---
 
 func sortedKeys(m map[string]float64) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	return ks
+}
+
+func sortedKeysS(m map[string][]store.Record) []string {
 	ks := make([]string, 0, len(m))
 	for k := range m {
 		ks = append(ks, k)

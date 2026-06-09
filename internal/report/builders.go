@@ -1,9 +1,6 @@
 package report
 
 import (
-	"strconv"
-	"time"
-
 	"github.com/nachmore/commstats/internal/store"
 )
 
@@ -149,55 +146,43 @@ func WithMetric(recs []store.Record, name string) []store.Record {
 	return out
 }
 
-// SumValues totals the values of the given records (for headline figures).
-func SumValues(recs []store.Record) float64 {
-	var s float64
+// --- windowable headline stat builders ---
+
+// SumStat is a headline figure that sums a metric's daily values over the
+// selected window.
+func SumStat(label string, recs []store.Record) HeadlineStat {
+	pts := make([]DayPoint, 0, len(recs))
 	for _, r := range recs {
-		s += r.Value
+		pts = append(pts, DayPoint{Date: dayStr(r), Value: r.Value})
 	}
-	return s
+	return HeadlineStat{Label: label, Reduce: "sum", Points: pts}
 }
 
-// DistinctDim counts distinct values of a dimension across records.
-func DistinctDim(recs []store.Record, dimKey string) int {
-	set := map[string]struct{}{}
+// DistinctStat counts distinct values of a dimension over the selected window.
+func DistinctStat(label, dimKey string, recs []store.Record) HeadlineStat {
+	pts := make([]DayPoint, 0, len(recs))
 	for _, r := range recs {
-		if v := r.Dimensions[dimKey]; v != "" {
-			set[v] = struct{}{}
+		id := r.Dimensions[dimKey]
+		if id == "" {
+			continue
 		}
+		pts = append(pts, DayPoint{Date: dayStr(r), Key: id})
 	}
-	return len(set)
+	return HeadlineStat{Label: label, Reduce: "distinct", Points: pts}
+}
+
+// AfterHoursStat is the % of an hour-keyed metric's volume outside business
+// hours / on weekends, recomputed over the selected window.
+func AfterHoursStat(label string, recs []store.Record) HeadlineStat {
+	pts := make([]DayPoint, 0, len(recs))
+	for _, r := range recs {
+		pts = append(pts, DayPoint{Date: dayStr(r), Key: r.Dimensions["hour"], Value: r.Value})
+	}
+	return HeadlineStat{Label: label, Reduce: "afterhours", Pct: true, Points: pts}
 }
 
 // IsChannelType reports whether a record's channel_type is a real channel, for
 // use as a TopNChart keep filter. (DMs are everything else.)
 func IsChannelType(r store.Record, realChannel bool) bool {
 	return isRealChannel(r.Dimensions[dimChannelType]) == realChannel
-}
-
-// businessStart/businessEnd bound "working hours" (local); activity outside is
-// counted as after-hours.
-const businessStart, businessEnd = 8, 18
-
-// AfterHoursPct returns the percentage (0-100) of an hour-keyed metric's volume
-// that falls outside business hours OR on a weekend — a boundary-erosion
-// signal. recs must be the hour-bucketed metric (dimension "hour"); weekend is
-// derived from each record's day.
-func AfterHoursPct(recs []store.Record) float64 {
-	var after, total float64
-	for _, r := range recs {
-		h, err := strconv.Atoi(r.Dimensions["hour"])
-		if err != nil {
-			continue
-		}
-		total += r.Value
-		weekend := r.Day.Weekday() == time.Sunday || r.Day.Weekday() == time.Saturday
-		if weekend || h < businessStart || h >= businessEnd {
-			after += r.Value
-		}
-	}
-	if total == 0 {
-		return 0
-	}
-	return after / total * 100
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,8 +29,13 @@ func RenderText(w io.Writer, doc Document, format Format) error {
 		} else {
 			fmt.Fprintf(w, "\n%s\n", strings.ToUpper(s.Label))
 		}
-		for _, t := range s.Totals {
-			fmt.Fprintf(w, "  %-22s %12s\n", t.Label, fmtNum(t.Value))
+		for _, st := range s.Stats {
+			v := reduceStat(st)
+			val := fmtNum(v)
+			if st.Pct {
+				val = fmt.Sprintf("%.0f%%", v)
+			}
+			fmt.Fprintf(w, "  %-22s %12s\n", st.Label, val)
 		}
 	}
 
@@ -214,6 +220,43 @@ func fmtNum(v float64) string {
 		return fmt.Sprintf("%d", int64(v))
 	}
 	return fmt.Sprintf("%.1f", v)
+}
+
+// reduceStat computes a headline stat over all its points (full range), the
+// terminal/markdown equivalent of the client-side windowed reduction.
+func reduceStat(st HeadlineStat) float64 {
+	switch st.Reduce {
+	case "distinct":
+		set := map[string]struct{}{}
+		for _, p := range st.Points {
+			set[p.Key] = struct{}{}
+		}
+		return float64(len(set))
+	case "afterhours":
+		var after, total float64
+		for _, p := range st.Points {
+			h, err := strconv.Atoi(p.Key)
+			if err != nil {
+				continue
+			}
+			total += p.Value
+			t, _ := time.Parse("2006-01-02", p.Date)
+			wd := t.Weekday()
+			if wd == time.Sunday || wd == time.Saturday || h < 8 || h >= 18 {
+				after += p.Value
+			}
+		}
+		if total == 0 {
+			return 0
+		}
+		return after / total * 100
+	default: // sum
+		var s float64
+		for _, p := range st.Points {
+			s += p.Value
+		}
+		return s
+	}
 }
 
 func keysOf(m map[string]map[string]struct{}) []string {

@@ -284,17 +284,42 @@ function renderChart(grid, chart) {
 
 // --- overview ---
 
+function reduceStat(stat) {
+  const pts = inWindow(stat.points);
+  if (stat.reduce === "distinct") {
+    const set = new Set(); pts.forEach(p => set.add(p.k)); return set.size;
+  }
+  if (stat.reduce === "afterhours") {
+    let after = 0, total = 0;
+    pts.forEach(p => {
+      const h = parseInt(p.k, 10); total += p.v;
+      const wd = new Date(p.d + "T00:00:00").getDay(); // 0=Sun..6=Sat
+      if (wd === 0 || wd === 6 || h < 8 || h >= 18) after += p.v;
+    });
+    return total ? after / total * 100 : 0;
+  }
+  let sum = 0; pts.forEach(p => sum += p.v); return sum; // "sum"
+}
+
+function fmtStat(stat, v) {
+  return stat.pct ? Math.round(v) + "%" : Math.round(v).toLocaleString();
+}
+
 function renderOverview(panel) {
   const ov = DATA.overview || {};
   const hl = el("div", "headlines");
   (ov.sources || []).forEach(s => {
     const card = el("div", "headline");
     card.appendChild(el("h4", null, s.label || s.source));
-    (s.totals || []).forEach(t => {
+    (s.stats || []).forEach(stat => {
       const row = el("div", "row");
-      row.appendChild(el("span", null, t.label));
-      row.appendChild(el("span", "n", Math.round(t.value).toLocaleString()));
+      row.appendChild(el("span", null, stat.label));
+      const n = el("span", "n");
+      row.appendChild(n);
       card.appendChild(row);
+      // Recompute this figure for the current window on every control change.
+      REDRAW.push(() => { n.textContent = fmtStat(stat, reduceStat(stat)); });
+      n.textContent = fmtStat(stat, reduceStat(stat));
     });
     hl.appendChild(card);
   });

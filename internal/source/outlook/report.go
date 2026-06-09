@@ -19,13 +19,13 @@ func (emailReporter) PrimaryMetric() string { return "emails_sent" }
 // HourMetric contributes received-email volume to the combined hours chart.
 func (emailReporter) HourMetric() string { return "emails_received_by_hour" }
 
-func (emailReporter) Headline(recs []store.Record) []report.LabeledValue {
-	return []report.LabeledValue{
-		{Label: "received", Value: report.SumValues(report.WithMetric(recs, "emails_received"))},
-		{Label: "sent", Value: report.SumValues(report.WithMetric(recs, "emails_sent"))},
-		{Label: "read", Value: report.SumValues(report.WithMetric(recs, "emails_read"))},
-		{Label: "unread", Value: report.SumValues(report.WithMetric(recs, "emails_unread"))},
-		{Label: "after-hours received %", Value: report.AfterHoursPct(report.WithMetric(recs, "emails_received_by_hour"))},
+func (emailReporter) Headline(recs []store.Record) []report.HeadlineStat {
+	return []report.HeadlineStat{
+		report.SumStat("received", report.WithMetric(recs, "emails_received")),
+		report.SumStat("sent", report.WithMetric(recs, "emails_sent")),
+		report.SumStat("read", report.WithMetric(recs, "emails_read")),
+		report.SumStat("unread", report.WithMetric(recs, "emails_unread")),
+		report.AfterHoursStat("after-hours received %", report.WithMetric(recs, "emails_received_by_hour")),
 	}
 }
 
@@ -54,16 +54,15 @@ func (calendarReporter) PrimaryMetric() string { return "meeting_minutes" }
 // HourMetric contributes meeting start-hour volume to the combined chart.
 func (calendarReporter) HourMetric() string { return "meetings_by_hour" }
 
-func (calendarReporter) Headline(recs []store.Record) []report.LabeledValue {
+func (calendarReporter) Headline(recs []store.Record) []report.HeadlineStat {
 	// Canonical meeting count = the size partition, which is emitted only for
 	// real meetings (with other attendees) — unlike the type partition, which
 	// also counts all-day banners and personal blocks.
-	meetingCount := report.SumValues(withDim(report.WithMetric(recs, "meetings"), "size"))
-	return []report.LabeledValue{
-		{Label: "events", Value: report.SumValues(report.WithMetric(recs, "calendar_events"))},
-		{Label: "meetings", Value: meetingCount},
-		{Label: "meeting minutes", Value: report.SumValues(report.WithMetric(recs, "meeting_minutes"))},
-		{Label: "overbookings", Value: report.SumValues(report.WithMetric(recs, "calendar_overbookings"))},
+	return []report.HeadlineStat{
+		report.SumStat("events", report.WithMetric(recs, "calendar_events")),
+		report.SumStat("meetings", withDim(report.WithMetric(recs, "meetings"), "size")),
+		report.SumStat("meeting minutes", report.WithMetric(recs, "meeting_minutes")),
+		report.SumStat("overbookings", report.WithMetric(recs, "calendar_overbookings")),
 	}
 }
 

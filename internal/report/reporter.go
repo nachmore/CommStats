@@ -19,7 +19,7 @@ import (
 // meetings, so summing every meetings row would multi-count).
 type Reporter interface {
 	Charts(recs []store.Record, topN int) []Chart
-	Headline(recs []store.Record) []LabeledValue
+	Headline(recs []store.Record) []HeadlineStat
 }
 
 // AppNamer lets a source declare the application its medium comes from, so

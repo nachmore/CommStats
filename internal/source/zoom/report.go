@@ -16,12 +16,12 @@ func (zoomReporter) AppName() string       { return "Zoom" }
 func (zoomReporter) PrimaryMetric() string { return "zoom_minutes" }
 func (zoomReporter) HourMetric() string    { return "meetings_by_hour" }
 
-func (zoomReporter) Headline(recs []store.Record) []report.LabeledValue {
-	return []report.LabeledValue{
-		{Label: "meetings", Value: report.SumValues(report.WithMetric(recs, "zoom_meetings"))},
-		{Label: "minutes", Value: report.SumValues(report.WithMetric(recs, "zoom_minutes"))},
-		{Label: "participant minutes", Value: report.SumValues(report.WithMetric(recs, "participant_minutes"))},
-		{Label: "after-hours %", Value: report.AfterHoursPct(report.WithMetric(recs, "meetings_by_hour"))},
+func (zoomReporter) Headline(recs []store.Record) []report.HeadlineStat {
+	return []report.HeadlineStat{
+		report.SumStat("meetings", report.WithMetric(recs, "zoom_meetings")),
+		report.SumStat("minutes", report.WithMetric(recs, "zoom_minutes")),
+		report.SumStat("participant minutes", report.WithMetric(recs, "participant_minutes")),
+		report.AfterHoursStat("after-hours %", report.WithMetric(recs, "meetings_by_hour")),
 	}
 }
 
