@@ -1,126 +1,139 @@
 package report
 
 import (
-	"sort"
-	"time"
-
 	"github.com/nachmore/commstats/internal/store"
 )
 
 // This file holds the exported chart-builder helpers a source's Reporter
-// composes to assemble its curated charts. Each takes already-filtered records
-// (typically a single metric name) and returns a Chart.
+// composes to assemble its curated charts. Each emits raw daily DayPoints; the
+// client windows + aggregates them per the global controls.
 
-// ScalarSeriesChart builds a multi-granularity time-series chart that sums the
-// records' values per time bucket. Use for dimensionless metrics like
-// emails_sent, or to total a dimensioned metric's volume over time.
+// dayStr formats a record's day as YYYY-MM-DD.
+func dayStr(r store.Record) string { return r.Day.Format("2006-01-02") }
+
+// ScalarSeriesChart is a single time series summing the records' values per day.
 func ScalarSeriesChart(title string, recs []store.Record) Chart {
-	return Chart{Title: title, Kind: "series", Periods: scalarSeries(recs)}
+	pts := make([]DayPoint, 0, len(recs))
+	for _, r := range recs {
+		pts = append(pts, DayPoint{Date: dayStr(r), Value: r.Value})
+	}
+	return Chart{Title: title, Kind: "series", Agg: "sum", Points: pts}
 }
 
-// DistinctSeriesChart builds a time-series of the distinct count of a dimension
-// value per bucket (e.g. unique channels/day). Unlike ScalarSeriesChart it
-// counts distinct dim values rather than summing record values.
+// DistinctSeriesChart is a time series of the distinct count of a dimension's
+// values per bucket (e.g. unique channels/day). The client counts distinct Keys
+// within each bucket.
 func DistinctSeriesChart(title, dimKey string, recs []store.Record) Chart {
-	out := make([]NamedScalarSeries, 0, len(scalarPeriodPlan))
-	for _, p := range scalarPeriodPlan {
-		sets := map[string]map[string]struct{}{}
-		labels := map[string]string{}
-		for _, r := range recs {
-			id := r.Dimensions[dimKey]
+	pts := make([]DayPoint, 0, len(recs))
+	for _, r := range recs {
+		id := r.Dimensions[dimKey]
+		if id == "" {
+			continue
+		}
+		pts = append(pts, DayPoint{Date: dayStr(r), Key: id, Value: 1})
+	}
+	return Chart{Title: title, Kind: "series", Agg: "distinct", Points: pts}
+}
+
+// DualSeriesChart combines two summed time series on left/right y-axes (e.g.
+// zoom minutes + meetings, slack messages + unique channels). The right series
+// may sum or count-distinct.
+func DualSeriesChart(title, leftName string, left []store.Record, rightName, rightAgg, rightDimKey string, right []store.Record) Chart {
+	lp := make([]DayPoint, 0, len(left))
+	for _, r := range left {
+		lp = append(lp, DayPoint{Date: dayStr(r), Value: r.Value})
+	}
+	rp := make([]DayPoint, 0, len(right))
+	for _, r := range right {
+		if rightAgg == "distinct" {
+			id := r.Dimensions[rightDimKey]
 			if id == "" {
 				continue
 			}
-			bk, bl := bucketOf(r.Day, p.period)
-			if sets[bk] == nil {
-				sets[bk] = map[string]struct{}{}
-			}
-			sets[bk][id] = struct{}{}
-			labels[bk] = bl
+			rp = append(rp, DayPoint{Date: dayStr(r), Key: id, Value: 1})
+		} else {
+			rp = append(rp, DayPoint{Date: dayStr(r), Value: r.Value})
 		}
-		keys := make([]string, 0, len(sets))
-		for k := range sets {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		s := NamedScalarSeries{Period: p.period.Title()}
-		for _, k := range keys {
-			s.Labels = append(s.Labels, labels[k])
-			s.Data = append(s.Data, float64(len(sets[k])))
-		}
-		out = append(out, s)
 	}
-	return Chart{Title: title, Kind: "series", Periods: out}
+	return Chart{
+		Title: title, Kind: "dual", Agg: "sum",
+		Points: lp,
+		Labels: map[string]string{"left": leftName, "right": rightName},
+		Right:  &DualSeries{Name: rightName, Agg: rightAgg, Points: rp},
+	}
 }
 
-// BreakdownChart sums values per categorical dimension value, sorted by value
-// descending. Use for channel_type, meeting size/duration/category, etc.
+// BreakdownChart sums values per categorical dimension value (rendered as bars
+// or doughnut). doughnut controls the client rendering hint.
 func BreakdownChart(title, dimKey string, recs []store.Record) Chart {
-	sums := map[string]float64{}
+	return breakdown(title, dimKey, recs, "breakdown")
+}
+
+// DoughnutChart is a compositional breakdown rendered as a doughnut.
+func DoughnutChart(title, dimKey string, recs []store.Record) Chart {
+	return breakdown(title, dimKey, recs, "doughnut")
+}
+
+func breakdown(title, dimKey string, recs []store.Record, kind string) Chart {
+	pts := make([]DayPoint, 0, len(recs))
 	for _, r := range recs {
 		v, ok := r.Dimensions[dimKey]
 		if !ok {
 			continue
 		}
-		sums[v] += r.Value
+		pts = append(pts, DayPoint{Date: dayStr(r), Key: v, Value: r.Value})
 	}
-	return Chart{Title: title, Kind: "breakdown", Bars: sortedLabeled(sums)}
+	return Chart{Title: title, Kind: kind, Agg: "sum", Points: pts}
 }
 
-// OrderedChart sums values per numeric dimension value, in numeric order with
-// gaps filled (e.g. an hour-of-day histogram showing all 24 slots).
+// OrderedChart sums values per numeric dimension value (e.g. hour-of-day),
+// rendered as a histogram ordered by the numeric key.
 func OrderedChart(title, dimKey string, recs []store.Record) Chart {
-	g := MetricGroup{DimKey: dimKey, Records: recs}
-	return Chart{Title: title, Kind: "ordered", Bars: orderedBars(g)}
-}
-
-// TopNChart ranks entities (identified by idKey, labeled via nameKey) by summed
-// value, capped at n. keep, if non-nil, filters which records participate —
-// e.g. to split top channels from top DMs by channel_type. Labels are passed
-// through displayName for #/@ prefixing and group-DM prettifying.
-func TopNChart(title, idKey, nameKey string, recs []store.Record, n int, keep func(store.Record) bool) Chart {
-	g := MetricGroup{IDKey: idKey, NameKey: nameKey}
+	pts := make([]DayPoint, 0, len(recs))
 	for _, r := range recs {
-		if keep == nil || keep(r) {
-			g.Records = append(g.Records, r)
+		v, ok := r.Dimensions[dimKey]
+		if !ok {
+			continue
 		}
+		pts = append(pts, DayPoint{Date: dayStr(r), Key: v, Value: r.Value})
 	}
-	return Chart{Title: title, Kind: "topn", Top: topNBars(g, n)}
+	return Chart{Title: title, Kind: "ordered", Agg: "sum", Points: pts}
 }
 
-// WeekdayChart builds an average-per-weekday bar chart from a metric, averaging
-// each weekday's total over how many of that weekday appear in the data span.
+// WeekdayChart shows average value per weekday over the windowed range. The
+// client derives each point's weekday from its date and averages.
 func WeekdayChart(title string, recs []store.Record) Chart {
-	total := map[time.Weekday]float64{}
-	var lo, hi time.Time
+	pts := make([]DayPoint, 0, len(recs))
 	for _, r := range recs {
-		total[r.Day.Weekday()] += r.Value
-		if lo.IsZero() || r.Day.Before(lo) {
-			lo = r.Day
-		}
-		if hi.IsZero() || r.Day.After(hi) {
-			hi = r.Day
-		}
+		pts = append(pts, DayPoint{Date: dayStr(r), Value: r.Value})
 	}
-	occur := map[time.Weekday]int{}
-	if !lo.IsZero() {
-		for d := lo; !d.After(hi); d = d.AddDate(0, 0, 1) {
-			occur[d.Weekday()]++
-		}
-	}
-	var bars []LabeledValue
-	for _, wd := range weekdayOrder {
-		avg := 0.0
-		if n := occur[wd]; n > 0 {
-			avg = total[wd] / float64(n)
-		}
-		bars = append(bars, LabeledValue{Label: wd.String()[:3], Value: avg})
-	}
-	return Chart{Title: title, Kind: "ordered", Bars: bars}
+	return Chart{Title: title, Kind: "weekday", Agg: "sum", Points: pts}
 }
 
-// Records filtering helpers a Reporter can use to slice its input by metric or
-// dimension presence before handing to a builder.
+// TopNChart ranks entities (id via idKey, label via nameKey) by summed value,
+// capped at n. keep filters participating records. Labels carry display names
+// (#/@ prefixing, group-DM prettifying).
+func TopNChart(title, idKey, nameKey string, recs []store.Record, n int, keep func(store.Record) bool) Chart {
+	pts := make([]DayPoint, 0, len(recs))
+	labels := map[string]string{}
+	for _, r := range recs {
+		if keep != nil && !keep(r) {
+			continue
+		}
+		id := r.Dimensions[idKey]
+		if id == "" {
+			continue
+		}
+		pts = append(pts, DayPoint{Date: dayStr(r), Key: id, Value: r.Value})
+		if _, ok := labels[id]; !ok {
+			labels[id] = displayName(r.Dimensions[nameKey], r.Dimensions[dimChannelType])
+		}
+	}
+	return Chart{Title: title, Kind: "topn", Agg: "sum", TopN: n, Points: pts, Labels: labels}
+}
+
+// Records filtering helpers a Reporter can use to slice its input before
+// handing to a builder.
 
 // WithMetric returns records whose metric Name matches.
 func WithMetric(recs []store.Record, name string) []store.Record {
@@ -142,8 +155,7 @@ func SumValues(recs []store.Record) float64 {
 	return s
 }
 
-// DistinctDim counts distinct values of a dimension across records (for
-// headline figures like total unique channels).
+// DistinctDim counts distinct values of a dimension across records.
 func DistinctDim(recs []store.Record, dimKey string) int {
 	set := map[string]struct{}{}
 	for _, r := range recs {

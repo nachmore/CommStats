@@ -32,46 +32,6 @@ const (
 	HTML     Format = "html"
 )
 
-// Period is the time-bucket granularity for scalar time series.
-type Period int
-
-const (
-	Day Period = iota
-	Week
-	Month
-	Year
-)
-
-// Title is a human label for the period granularity.
-func (p Period) Title() string {
-	switch p {
-	case Week:
-		return "Weekly"
-	case Month:
-		return "Monthly"
-	case Year:
-		return "Yearly"
-	default:
-		return "Daily"
-	}
-}
-
-// bucketOf returns the (sort key, display label) for the bucket t falls in.
-func bucketOf(t time.Time, p Period) (key, label string) {
-	switch p {
-	case Week:
-		// Anchor to the week's Monday so the key sorts chronologically.
-		monday := t.AddDate(0, 0, -((int(t.Weekday()) + 6) % 7))
-		return monday.Format("2006-01-02"), "wk " + monday.Format("01-02")
-	case Month:
-		return t.Format("2006-01"), t.Format("2006-01")
-	case Year:
-		return t.Format("2006"), t.Format("2006")
-	default:
-		return t.Format("2006-01-02"), t.Format("01-02")
-	}
-}
-
 var weekdayOrder = [7]time.Weekday{
 	time.Monday, time.Tuesday, time.Wednesday, time.Thursday,
 	time.Friday, time.Saturday, time.Sunday,

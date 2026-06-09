@@ -3,7 +3,9 @@ package report
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
+	"time"
 )
 
 // RenderText writes a generic per-source text/markdown report built from the
@@ -58,23 +60,22 @@ func writeChart(w io.Writer, md bool, c Chart) {
 	}
 
 	switch c.Kind {
-	case "series":
-		// Show the daily series (first period) as a compact recent tail.
-		if len(c.Periods) == 0 {
-			return
-		}
-		p := c.Periods[0]
-		n := len(p.Labels)
+	case "series", "dual":
+		// Daily totals, compact recent tail.
+		rows := byDate(c.Points, c.Agg)
 		const tail = 14
-		start := 0
-		if n > tail {
-			start = n - tail
+		if len(rows) > tail {
+			rows = rows[len(rows)-tail:]
 		}
-		writeKVTable(w, md, p.Period, "value", pairLabels(p.Labels[start:], p.Data[start:]))
-	case "ordered", "breakdown":
-		writeKVTable(w, md, "bucket", "count", labeledPairs(c.Bars))
+		writeKVTable(w, md, "day", "value", rows)
+	case "weekday":
+		writeKVTable(w, md, "weekday", "avg", weekdayRows(c.Points))
+	case "ordered":
+		writeKVTable(w, md, "bucket", "count", sortedByKey(c.Points))
 	case "topn":
-		writeKVTable(w, md, "name", "count", labeledPairs(c.Top))
+		writeKVTable(w, md, "name", "count", topRows(c.Points, c.Labels, c.TopN))
+	default: // breakdown / doughnut
+		writeKVTable(w, md, "bucket", "count", sortedByValue(c.Points))
 	}
 }
 
@@ -83,22 +84,100 @@ type kv struct {
 	v float64
 }
 
-func labeledPairs(lvs []LabeledValue) []kv {
-	out := make([]kv, len(lvs))
-	for i, l := range lvs {
-		out[i] = kv{l.Label, l.Value}
+// byDate sums (or counts-distinct) points per day, ordered chronologically.
+func byDate(pts []DayPoint, agg string) []kv {
+	if agg == "distinct" {
+		sets := map[string]map[string]struct{}{}
+		for _, p := range pts {
+			if sets[p.Date] == nil {
+				sets[p.Date] = map[string]struct{}{}
+			}
+			sets[p.Date][p.Key] = struct{}{}
+		}
+		var out []kv
+		for _, d := range sortStr(keysOf(sets)) {
+			out = append(out, kv{d, float64(len(sets[d]))})
+		}
+		return out
+	}
+	sums := map[string]float64{}
+	for _, p := range pts {
+		sums[p.Date] += p.Value
+	}
+	var out []kv
+	for _, d := range sortStr(keysOfF(sums)) {
+		out = append(out, kv{d, sums[d]})
 	}
 	return out
 }
 
-func pairLabels(labels []string, data []float64) []kv {
-	out := make([]kv, 0, len(labels))
-	for i := range labels {
-		var v float64
-		if i < len(data) {
-			v = data[i]
+func sortedByValue(pts []DayPoint) []kv {
+	sums := map[string]float64{}
+	for _, p := range pts {
+		sums[p.Key] += p.Value
+	}
+	out := make([]kv, 0, len(sums))
+	for k, v := range sums {
+		out = append(out, kv{k, v})
+	}
+	sortKVValueDesc(out)
+	return out
+}
+
+func sortedByKey(pts []DayPoint) []kv {
+	sums := map[string]float64{}
+	for _, p := range pts {
+		sums[p.Key] += p.Value
+	}
+	out := make([]kv, 0, len(sums))
+	for _, k := range sortStr(keysOfF(sums)) {
+		out = append(out, kv{k, sums[k]})
+	}
+	return out
+}
+
+func topRows(pts []DayPoint, labels map[string]string, n int) []kv {
+	sums := map[string]float64{}
+	for _, p := range pts {
+		sums[p.Key] += p.Value
+	}
+	out := make([]kv, 0, len(sums))
+	for id, v := range sums {
+		label := id
+		if labels != nil && labels[id] != "" {
+			label = labels[id]
 		}
-		out = append(out, kv{labels[i], v})
+		out = append(out, kv{label, v})
+	}
+	sortKVValueDesc(out)
+	if n > 0 && len(out) > n {
+		out = out[:n]
+	}
+	return out
+}
+
+func weekdayRows(pts []DayPoint) []kv {
+	total := map[time.Weekday]float64{}
+	days := map[time.Weekday]map[string]struct{}{}
+	for _, p := range pts {
+		t, err := time.Parse("2006-01-02", p.Date)
+		if err != nil {
+			continue
+		}
+		wd := t.Weekday()
+		total[wd] += p.Value
+		if days[wd] == nil {
+			days[wd] = map[string]struct{}{}
+		}
+		days[wd][p.Date] = struct{}{}
+	}
+	var out []kv
+	for _, wd := range weekdayOrder {
+		avg := 0.0
+		if n := len(days[wd]); n > 0 {
+			avg = total[wd] / float64(n)
+		}
+		out = append(out, kv{wd.String()[:3], avg})
 	}
 	return out
 }
@@ -135,4 +214,31 @@ func fmtNum(v float64) string {
 		return fmt.Sprintf("%d", int64(v))
 	}
 	return fmt.Sprintf("%.1f", v)
+}
+
+func keysOf(m map[string]map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func keysOfF(m map[string]float64) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func sortStr(s []string) []string { sort.Strings(s); return s }
+
+func sortKVValueDesc(rows []kv) {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].v != rows[j].v {
+			return rows[i].v > rows[j].v
+		}
+		return rows[i].k < rows[j].k
+	})
 }
