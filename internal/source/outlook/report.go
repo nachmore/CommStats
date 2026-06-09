@@ -54,10 +54,10 @@ func (calendarReporter) PrimaryMetric() string { return "meeting_minutes" }
 func (calendarReporter) HourMetric() string { return "meetings_by_hour" }
 
 func (calendarReporter) Headline(recs []store.Record) []report.LabeledValue {
-	// Canonical meeting count = the role partition, which is emitted only for
-	// real meetings (with other attendees) — unlike the size partition, which
+	// Canonical meeting count = the size partition, which is emitted only for
+	// real meetings (with other attendees) — unlike the type partition, which
 	// also counts all-day banners and personal blocks.
-	meetingCount := report.SumValues(withDim(report.WithMetric(recs, "meetings"), "role"))
+	meetingCount := report.SumValues(withDim(report.WithMetric(recs, "meetings"), "size"))
 	return []report.LabeledValue{
 		{Label: "events", Value: report.SumValues(report.WithMetric(recs, "calendar_events"))},
 		{Label: "meetings", Value: meetingCount},
@@ -69,7 +69,8 @@ func (calendarReporter) Headline(recs []store.Record) []report.LabeledValue {
 func (calendarReporter) Charts(recs []store.Record, topN int) []report.Chart {
 	meetings := report.WithMetric(recs, "meetings")
 	return []report.Chart{
-		report.BreakdownChart("meetings by size", "size", withDim(meetings, "size")),
+		report.BreakdownChart("calendar entries by type", "type", withDim(meetings, "type")),
+		report.BreakdownChart("meetings by participant size", "size", withDim(meetings, "size")),
 		report.BreakdownChart("meetings by duration", "duration", withDim(meetings, "duration")),
 		report.BreakdownChart("meetings by role", "role", withDim(meetings, "role")),
 		report.BreakdownChart("my response", "response", withDim(meetings, "response")),

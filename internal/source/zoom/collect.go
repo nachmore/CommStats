@@ -91,19 +91,20 @@ func bucketMeetings(srcName string, w source.TimeWindow, rows []meeting, dayStar
 }
 
 // sizeBucket classifies a meeting by actual participant count. solo means only
-// the host showed (others no-showed) — a distinct, interesting signal.
+// the host showed (others no-showed) — a distinct, interesting signal. Labels
+// carry the participant range so buckets are self-explanatory in reports.
 func sizeBucket(participants int) string {
 	switch {
 	case participants <= 1:
-		return "solo"
+		return "solo (1)"
 	case participants == 2:
-		return "1:1"
+		return "1:1 (2)"
 	case participants <= 5:
-		return "small"
+		return "small (3-5)"
 	case participants <= 10:
-		return "medium"
+		return "medium (6-10)"
 	default:
-		return "large"
+		return "large (11+)"
 	}
 }
 

@@ -17,7 +17,8 @@ type interval struct{ start, end time.Time }
 // the signed-in user (e.g. "amazon") used for external-participant detection.
 func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAddr, homeOrg string) []source.Metric {
 	var (
-		byShape    = map[string]int{} // size/shape bucket (incl. personal-block)
+		byType     = map[string]int{} // entry kind: meeting/all-day/all-day-free/personal-block
+		bySize     = map[string]int{} // participant-count buckets (real meetings only)
 		byDuration = map[string]int{}
 		byRole     = map[string]int{}
 		byResponse = map[string]int{}
@@ -56,25 +57,26 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 			}
 		}
 
-		// Shape: all-day (split by whether it holds busy time), personal block
-		// (no other attendees), or a sized meeting by headcount (self + others).
-		shape := ""
+		// Type classifies every calendar entry by what kind it is — distinct
+		// from participant size, which only applies to real meetings.
+		entryType := ""
 		switch {
 		case e.IsAllDay && free:
-			shape = "all-day-free" // e.g. an informational all-day banner
+			entryType = "all-day-free" // e.g. an informational all-day banner
 		case e.IsAllDay:
-			shape = "all-day"
+			entryType = "all-day"
 		case others == 0:
-			shape = "personal-block"
+			entryType = "personal-block"
 		default:
-			shape = sizeBucket(others + 1)
+			entryType = "meeting"
 		}
-		byShape[shape]++
+		byType[entryType]++
 
 		// The remaining breakdowns describe actual meetings (with other people),
 		// not all-day items or personal blocks.
 		isMeeting := !e.IsAllDay && others > 0
 		if isMeeting {
+			bySize[sizeBucket(others+1)]++
 			byDuration[durationBucket(dur, e.IsAllDay)]++
 			if e.IsOrganizer {
 				byRole["organizer"]++
@@ -117,7 +119,8 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 			metrics = append(metrics, src(name, v, map[string]string{dimKey: k}))
 		}
 	}
-	add("meetings", byShape, "size")
+	add("meetings", byType, "type")
+	add("meetings", bySize, "size")
 	add("meetings", byDuration, "duration")
 	add("meetings", byRole, "role")
 	add("meetings", byResponse, "response")
@@ -134,17 +137,18 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 	return metrics
 }
 
-// sizeBucket classifies a meeting by total headcount (including self).
+// sizeBucket classifies a meeting by total headcount (including self). Labels
+// carry the participant range so "medium" etc. is self-explanatory in reports.
 func sizeBucket(total int) string {
 	switch {
 	case total <= 2:
-		return "1:1"
+		return "1:1 (2)"
 	case total <= 5:
-		return "small"
+		return "small (3-5)"
 	case total <= 10:
-		return "medium"
+		return "medium (6-10)"
 	default:
-		return "large"
+		return "large (11+)"
 	}
 }
 
