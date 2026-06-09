@@ -27,6 +27,7 @@ func (slackReporter) Headline(recs []store.Record) []report.LabeledValue {
 	return []report.LabeledValue{
 		{Label: "messages", Value: report.SumValues(msgs)},
 		{Label: "unique channels", Value: float64(report.DistinctDim(msgs, "channel_id"))},
+		{Label: "after-hours %", Value: report.AfterHoursPct(report.WithMetric(recs, "messages_by_hour"))},
 	}
 }
 
@@ -35,9 +36,9 @@ func (slackReporter) Charts(recs []store.Record, topN int) []report.Chart {
 	hours := report.WithMetric(recs, "messages_by_hour")
 
 	return []report.Chart{
-		report.ScalarSeriesChart("messages sent", msgs),
-		report.DistinctSeriesChart("unique channels", "channel_id", msgs),
-		report.BreakdownChart("messages by channel type", "channel_type", msgs),
+		report.DualSeriesChart("messages & unique channels", "messages", msgs,
+			"unique channels", "distinct", "channel_id", msgs),
+		report.DoughnutChart("messages by channel type", "channel_type", msgs),
 		report.TopNChart("top channels", "channel_id", "channel_name", msgs, topN,
 			func(r store.Record) bool { return report.IsChannelType(r, true) }),
 		report.TopNChart("top DMs", "channel_id", "channel_name", msgs, topN,

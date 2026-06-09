@@ -1,6 +1,9 @@
 package report
 
 import (
+	"strconv"
+	"time"
+
 	"github.com/nachmore/commstats/internal/store"
 )
 
@@ -170,4 +173,31 @@ func DistinctDim(recs []store.Record, dimKey string) int {
 // use as a TopNChart keep filter. (DMs are everything else.)
 func IsChannelType(r store.Record, realChannel bool) bool {
 	return isRealChannel(r.Dimensions[dimChannelType]) == realChannel
+}
+
+// businessStart/businessEnd bound "working hours" (local); activity outside is
+// counted as after-hours.
+const businessStart, businessEnd = 8, 18
+
+// AfterHoursPct returns the percentage (0-100) of an hour-keyed metric's volume
+// that falls outside business hours OR on a weekend — a boundary-erosion
+// signal. recs must be the hour-bucketed metric (dimension "hour"); weekend is
+// derived from each record's day.
+func AfterHoursPct(recs []store.Record) float64 {
+	var after, total float64
+	for _, r := range recs {
+		h, err := strconv.Atoi(r.Dimensions["hour"])
+		if err != nil {
+			continue
+		}
+		total += r.Value
+		weekend := r.Day.Weekday() == time.Sunday || r.Day.Weekday() == time.Saturday
+		if weekend || h < businessStart || h >= businessEnd {
+			after += r.Value
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	return after / total * 100
 }

@@ -339,6 +339,7 @@ function combinedActivity(grid, title, mode) {
   const ch = new Chart(cv, { type: "bar", data: recompute(),
     options: { responsive: true, scales: { y: { title: { display: true, text: "% of own peak" }, max: 100 } } } });
   register(ch, recompute);
+  grid.appendChild(card);
 }
 
 // OVERVIEW_ACTIVITY: per-source daily points for weekday (primary metric) and

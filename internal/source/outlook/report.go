@@ -25,6 +25,7 @@ func (emailReporter) Headline(recs []store.Record) []report.LabeledValue {
 		{Label: "sent", Value: report.SumValues(report.WithMetric(recs, "emails_sent"))},
 		{Label: "read", Value: report.SumValues(report.WithMetric(recs, "emails_read"))},
 		{Label: "unread", Value: report.SumValues(report.WithMetric(recs, "emails_unread"))},
+		{Label: "after-hours received %", Value: report.AfterHoursPct(report.WithMetric(recs, "emails_received_by_hour"))},
 	}
 }
 
@@ -69,8 +70,8 @@ func (calendarReporter) Headline(recs []store.Record) []report.LabeledValue {
 func (calendarReporter) Charts(recs []store.Record, topN int) []report.Chart {
 	meetings := report.WithMetric(recs, "meetings")
 	return []report.Chart{
-		report.BreakdownChart("calendar entries by type", "type", withDim(meetings, "type")),
-		report.BreakdownChart("meetings by participant size", "size", withDim(meetings, "size")),
+		report.DoughnutChart("calendar entries by type", "type", withDim(meetings, "type")),
+		report.DoughnutChart("meetings by participant size", "size", withDim(meetings, "size")),
 		report.BreakdownChart("meetings by duration", "duration", withDim(meetings, "duration")),
 		report.BreakdownChart("meetings by role", "role", withDim(meetings, "role")),
 		report.BreakdownChart("my response", "response", withDim(meetings, "response")),
