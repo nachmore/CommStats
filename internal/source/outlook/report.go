@@ -28,6 +28,8 @@ func (emailReporter) Headline(recs []store.Record) []report.HeadlineStat {
 		report.SumStat("sent", report.WithMetric(recs, "emails_sent")),
 		report.SumStat("read", report.WithMetric(recs, "emails_read")),
 		report.SumStat("unread", report.WithMetric(recs, "emails_unread")),
+		report.SumStat("auto-junked", report.WithMetric(recs, "emails_junk")),
+		report.SumStat("auto-deleted", report.WithMetric(recs, "emails_deleted")),
 		report.AfterHoursStat("after-hours received %", report.WithMetric(recs, "emails_received_by_hour")),
 	}
 }
@@ -38,6 +40,8 @@ func (emailReporter) Charts(recs []store.Record, topN int) []report.Chart {
 		report.ScalarSeriesChart("emails sent", report.WithMetric(recs, "emails_sent")),
 		report.ScalarSeriesChart("emails read", report.WithMetric(recs, "emails_read")),
 		report.ScalarSeriesChart("emails unread", report.WithMetric(recs, "emails_unread")),
+		report.ScalarSeriesChart("emails auto-junked", report.WithMetric(recs, "emails_junk")),
+		report.ScalarSeriesChart("emails auto-deleted", report.WithMetric(recs, "emails_deleted")),
 		report.WeekdayChart("avg emails received/day by weekday", report.WithMetric(recs, "emails_received")),
 		report.WeekdayChart("avg emails sent/day by weekday", report.WithMetric(recs, "emails_sent")),
 		report.OrderedChart("emails received by hour", "hour", report.WithMetric(recs, "emails_received_by_hour")),

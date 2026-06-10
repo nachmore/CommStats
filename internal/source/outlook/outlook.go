@@ -86,13 +86,40 @@ func (s *Source) Collect(ctx context.Context, w source.TimeWindow) ([]source.Met
 		return source.Metric{Source: sourceEmail, Name: name, Value: float64(v), Window: w}
 	}
 
-	received, err := c.count(ctx, "/me/mailfolders/inbox/messages", dayFilter("ReceivedDateTime", day))
+	// Count received mail across ALL folders (allitems), not just the inbox:
+	// inbox rules route most mail elsewhere, so an inbox-only count drastically
+	// undercounts what actually arrived. Junk and Deleted are then subtracted so
+	// "received" means real mail you'd reasonably act on — but both are reported
+	// as their own metrics, since auto-junked/auto-deleted volume is interesting.
+	countDay := func(folder, extra string) (int, error) {
+		f := dayFilter("ReceivedDateTime", day)
+		if extra != "" {
+			f.Set("$filter", f.Get("$filter")+extra)
+		}
+		return c.count(ctx, "/me/mailfolders/"+folder+"/messages", f)
+	}
+
+	allRecv, err := countDay("allitems", "")
 	if err != nil {
 		return nil, err
 	}
-	readFilter := dayFilter("ReceivedDateTime", day)
-	readFilter.Set("$filter", readFilter.Get("$filter")+" and IsRead eq true")
-	read, err := c.count(ctx, "/me/mailfolders/inbox/messages", readFilter)
+	junk, err := countDay("junkemail", "")
+	if err != nil {
+		return nil, err
+	}
+	deleted, err := countDay("deleteditems", "")
+	if err != nil {
+		return nil, err
+	}
+	allRead, err := countDay("allitems", " and IsRead eq true")
+	if err != nil {
+		return nil, err
+	}
+	junkRead, err := countDay("junkemail", " and IsRead eq true")
+	if err != nil {
+		return nil, err
+	}
+	delRead, err := countDay("deleteditems", " and IsRead eq true")
 	if err != nil {
 		return nil, err
 	}
@@ -100,20 +127,41 @@ func (s *Source) Collect(ctx context.Context, w source.TimeWindow) ([]source.Met
 	if err != nil {
 		return nil, err
 	}
+
+	received := allRecv - junk - deleted
+	read := allRead - junkRead - delRead
 	metrics := []source.Metric{
 		email("emails_received", received),
 		email("emails_read", read),
 		email("emails_unread", received-read),
 		email("emails_sent", sent),
+		email("emails_junk", junk),
+		email("emails_deleted", deleted),
 	}
 
 	// Email hour-of-day histograms (received + sent), so the overview can show
-	// combined cross-source busiest hours.
+	// combined cross-source busiest hours. Received spans allitems minus
+	// junk/deleted, mirroring the received count above.
 	dStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
 	dEnd := dStart.AddDate(0, 0, 1)
-	recvHours, err := c.messageHours(ctx, "inbox", "ReceivedDateTime", dStart, dEnd)
+	allHours, err := c.messageHours(ctx, "allitems", "ReceivedDateTime", dStart, dEnd)
 	if err != nil {
 		return nil, err
+	}
+	junkHours, err := c.messageHours(ctx, "junkemail", "ReceivedDateTime", dStart, dEnd)
+	if err != nil {
+		return nil, err
+	}
+	delHours, err := c.messageHours(ctx, "deleteditems", "ReceivedDateTime", dStart, dEnd)
+	if err != nil {
+		return nil, err
+	}
+	recvHours := map[int]int{}
+	for h, n := range allHours {
+		net := n - junkHours[h] - delHours[h]
+		if net > 0 {
+			recvHours[h] = net
+		}
 	}
 	sentHours, err := c.messageHours(ctx, "sentitems", "SentDateTime", dStart, dEnd)
 	if err != nil {
