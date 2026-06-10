@@ -20,7 +20,7 @@ type interval struct{ start, end time.Time }
 // dayStart/dayEnd bound the calendar day so multi-day or midnight-spanning
 // events only contribute the portion that falls within the day (otherwise a
 // single 3-day event would inflate one day past 24h).
-func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAddr, homeOrg string, dayStart, dayEnd time.Time, catFilter config.CategoryFilter) []source.Metric {
+func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAddr, homeOrg string, dayStart, dayEnd time.Time, catFilter config.CategoryFilter, titleFilter config.TitleFilter) []source.Metric {
 	var (
 		byType     = map[string]int{} // entry kind: meeting/all-day/all-day-free/personal-block
 		bySize     = map[string]int{} // participant-count buckets (real meetings only)
@@ -43,6 +43,11 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 		// Skip events whose category is configured not to count as a meeting
 		// (e.g. Room Bookings, DND, Doc Writing, Family Block).
 		if catFilter.Excludes(e.Categories) {
+			continue
+		}
+		// Title-based exclusion: personal all-day holds (e.g. "CL block") that
+		// carry no category but shouldn't count as meetings.
+		if titleFilter.Excludes(e.Subject) {
 			continue
 		}
 		// Out-of-office holds (OOO/OOTO/OOF) — frequently a colleague mistakenly

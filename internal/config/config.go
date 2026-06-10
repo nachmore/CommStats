@@ -27,6 +27,13 @@ type Config struct {
 	// is dropped from all calendar metrics — so changing this list requires a
 	// re-collect. Matching is case-insensitive on the trimmed category name.
 	IgnoreMeetingCategories []string `json:"ignore_meeting_categories"`
+
+	// IgnoreMeetingTitles lists substrings that, when found in an event's title,
+	// mark it as not a meeting (e.g. personal all-day holds like "CL block" that
+	// carry no category to filter on). Like categories, this is applied at
+	// collection time, so changing it requires a re-collect. Matching is
+	// case-insensitive substring — "CL block" matches "nachmano (CL block)".
+	IgnoreMeetingTitles []string `json:"ignore_meeting_titles"`
 }
 
 // CategoryFilter tests whether a calendar event's categories mark it for
@@ -64,6 +71,40 @@ func (f CategoryFilter) Excludes(categories []string) bool {
 // emoji ("⛔ DND"), so unlike channel names we don't strip any prefix.
 func normalizeCategory(s string) string {
 	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// TitleFilter tests whether a calendar event's title marks it for exclusion
+// from meeting stats. Unlike CategoryFilter (exact category match), titles are
+// matched as case-insensitive substrings, since the configured term is usually
+// embedded in a longer subject ("CL block" inside "nachmano (CL block)").
+type TitleFilter struct {
+	needles []string
+}
+
+// NewTitleFilter builds a filter from configured title substrings.
+func NewTitleFilter(titles []string) TitleFilter {
+	needles := make([]string, 0, len(titles))
+	for _, t := range titles {
+		if n := normalizeCategory(t); n != "" {
+			needles = append(needles, n)
+		}
+	}
+	return TitleFilter{needles: needles}
+}
+
+// Excludes reports whether the event's subject contains any configured title
+// substring.
+func (f TitleFilter) Excludes(subject string) bool {
+	if len(f.needles) == 0 {
+		return false
+	}
+	s := strings.ToLower(subject)
+	for _, n := range f.needles {
+		if strings.Contains(s, n) {
+			return true
+		}
+	}
+	return false
 }
 
 // Load reads <ConfigDir>/config.json. A missing file yields an empty config,

@@ -146,7 +146,8 @@ func (s *Source) Collect(ctx context.Context, w source.TimeWindow) ([]source.Met
 	// Categories configured to not count as meetings (e.g. Room Bookings, DND).
 	cfg, _ := config.Load()
 	catFilter := config.NewCategoryFilter(cfg.IgnoreMeetingCategories)
-	metrics = append(metrics, collectCalendar(sourceCalendar, w, events, selfAddr, homeOrg, dayStart, dayEnd, catFilter)...)
+	titleFilter := config.NewTitleFilter(cfg.IgnoreMeetingTitles)
+	metrics = append(metrics, collectCalendar(sourceCalendar, w, events, selfAddr, homeOrg, dayStart, dayEnd, catFilter, titleFilter)...)
 
 	return metrics, nil
 }
