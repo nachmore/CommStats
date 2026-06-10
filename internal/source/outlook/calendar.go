@@ -2,6 +2,7 @@ package outlook
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -37,10 +38,18 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 	// Real-meeting intervals, merged for actual (de-overlapped) time spent.
 	var meetingIvls []interval
 
+	oooCount := 0
 	for _, e := range events {
 		// Skip events whose category is configured not to count as a meeting
 		// (e.g. Room Bookings, DND, Doc Writing, Family Block).
 		if catFilter.Excludes(e.Categories) {
+			continue
+		}
+		// Out-of-office holds (OOO/OOTO/OOF) — frequently a colleague mistakenly
+		// sends a *busy* OOO that lands on your calendar. They aren't meetings;
+		// exclude from all meeting stats but tally as a fun extra metric.
+		if isOOO(e.Subject) {
+			oooCount++
 			continue
 		}
 		// Skip free/canceled holds entirely from "meeting" stats: ShowAs Free
@@ -157,9 +166,18 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 		source.Metric{Source: srcName, Name: "meeting_minutes", Value: totalMin, Window: w},
 		source.Metric{Source: srcName, Name: "meeting_busy_minutes", Value: mergedMinutes(meetingIvls), Window: w},
 		source.Metric{Source: srcName, Name: "calendar_overbookings", Value: float64(overbooked), Window: w},
+		source.Metric{Source: srcName, Name: "ooo_blocks", Value: float64(oooCount), Window: w},
 	)
 	return metrics
 }
+
+// oooRe matches out-of-office hold titles: the acronyms OOO/OOTO/OOF (as whole
+// words, case-insensitive, so they don't false-match inside other words) or the
+// phrase "out of office".
+var oooRe = regexp.MustCompile(`(?i)(\boo+(t?o|f)\b|out of office)`)
+
+// isOOO reports whether an event title denotes an out-of-office hold.
+func isOOO(subject string) bool { return oooRe.MatchString(subject) }
 
 // sizeBucket classifies a meeting by total headcount (including self). Labels
 // carry the participant range so "medium" etc. is self-explanatory in reports.

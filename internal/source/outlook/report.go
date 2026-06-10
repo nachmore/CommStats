@@ -76,6 +76,7 @@ func (calendarReporter) Headline(recs []store.Record) []report.HeadlineStat {
 		report.SumStat("meetings", withDim(report.WithMetric(recs, "meetings"), "size")),
 		report.SumStat("meeting minutes", report.WithMetric(recs, "meeting_minutes")),
 		report.SumStat("overbookings", report.WithMetric(recs, "calendar_overbookings")),
+		report.SumStat("others' OOO holds", report.WithMetric(recs, "ooo_blocks")),
 	}
 }
 
