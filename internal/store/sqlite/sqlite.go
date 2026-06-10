@@ -81,6 +81,47 @@ func (s *Store) Upsert(ctx context.Context, recs []store.Record) error {
 	return tx.Commit()
 }
 
+// ReplaceDay deletes all rows for the given day + metric-sources, then inserts
+// recs — so a re-collection drops stale rows (metrics/dimensions no longer
+// produced) rather than leaving them behind like Upsert does.
+func (s *Store) ReplaceDay(ctx context.Context, day time.Time, sources []string, recs []store.Record) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	dayStr := day.Format(time.RFC3339)
+	for _, src := range sources {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM metrics WHERE day = ? AND source = ?`, dayStr, src); err != nil {
+			return fmt.Errorf("replaceday delete %s: %w", src, err)
+		}
+	}
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO metrics (source, name, day, dimensions, value, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?);
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, r := range recs {
+		dims, err := canonicalDims(r.Dimensions)
+		if err != nil {
+			return err
+		}
+		if _, err := stmt.ExecContext(ctx,
+			r.Source, r.Name, dayStr, dims, r.Value, now,
+		); err != nil {
+			return fmt.Errorf("replaceday insert %s/%s: %w", r.Source, r.Name, err)
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) LatestDay(ctx context.Context, src string) (time.Time, bool, error) {
 	query := "SELECT MAX(day) FROM metrics"
 	var args []any

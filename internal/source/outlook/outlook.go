@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/nachmore/commstats/internal/config"
 	"github.com/nachmore/commstats/internal/source"
 )
 
@@ -142,7 +143,10 @@ func (s *Source) Collect(ctx context.Context, w source.TimeWindow) ([]source.Met
 	if err != nil {
 		return nil, err
 	}
-	metrics = append(metrics, collectCalendar(sourceCalendar, w, events, selfAddr, homeOrg, dayStart, dayEnd)...)
+	// Categories configured to not count as meetings (e.g. Room Bookings, DND).
+	cfg, _ := config.Load()
+	catFilter := config.NewCategoryFilter(cfg.IgnoreMeetingCategories)
+	metrics = append(metrics, collectCalendar(sourceCalendar, w, events, selfAddr, homeOrg, dayStart, dayEnd, catFilter)...)
 
 	return metrics, nil
 }

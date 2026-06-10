@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nachmore/commstats/internal/config"
 	"github.com/nachmore/commstats/internal/source"
 )
 
@@ -18,7 +19,7 @@ type interval struct{ start, end time.Time }
 // dayStart/dayEnd bound the calendar day so multi-day or midnight-spanning
 // events only contribute the portion that falls within the day (otherwise a
 // single 3-day event would inflate one day past 24h).
-func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAddr, homeOrg string, dayStart, dayEnd time.Time) []source.Metric {
+func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAddr, homeOrg string, dayStart, dayEnd time.Time, catFilter config.CategoryFilter) []source.Metric {
 	var (
 		byType     = map[string]int{} // entry kind: meeting/all-day/all-day-free/personal-block
 		bySize     = map[string]int{} // participant-count buckets (real meetings only)
@@ -37,6 +38,11 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 	var meetingIvls []interval
 
 	for _, e := range events {
+		// Skip events whose category is configured not to count as a meeting
+		// (e.g. Room Bookings, DND, Doc Writing, Family Block).
+		if catFilter.Excludes(e.Categories) {
+			continue
+		}
 		// Skip free/canceled holds entirely from "meeting" stats: ShowAs Free
 		// means it doesn't occupy the calendar as busy time.
 		free := strings.EqualFold(e.ShowAs, "Free")

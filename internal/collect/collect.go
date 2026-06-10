@@ -40,6 +40,8 @@ func Run(ctx context.Context, st store.Store, window source.TimeWindow, only str
 			continue
 		}
 		recs := make([]store.Record, len(metrics))
+		seen := map[string]struct{}{}
+		var msrcs []string
 		for i, m := range metrics {
 			recs[i] = store.Record{
 				Source:     m.Source,
@@ -48,9 +50,15 @@ func Run(ctx context.Context, st store.Store, window source.TimeWindow, only str
 				Value:      m.Value,
 				Dimensions: m.Dimensions,
 			}
+			if _, ok := seen[m.Source]; !ok {
+				seen[m.Source] = struct{}{}
+				msrcs = append(msrcs, m.Source)
+			}
 		}
-		if err := st.Upsert(ctx, recs); err != nil {
-			res.Err = fmt.Errorf("upsert: %w", err)
+		// ReplaceDay (vs Upsert) clears stale rows the re-collection no longer
+		// produces — e.g. a meeting category newly excluded by config.
+		if err := st.ReplaceDay(ctx, day, msrcs, recs); err != nil {
+			res.Err = fmt.Errorf("store: %w", err)
 		} else {
 			res.Count = len(recs)
 		}

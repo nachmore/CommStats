@@ -33,6 +33,11 @@ type Query struct {
 // the tool run multiple times a day and show live-updating totals.
 type Store interface {
 	Upsert(ctx context.Context, recs []Record) error
+	// ReplaceDay atomically deletes all existing rows for the given day and
+	// metric-sources, then inserts recs. Unlike Upsert it removes stale rows a
+	// re-collection no longer produces (e.g. a metric/dimension that dropped
+	// out after a config change), so the day reflects exactly the new recs.
+	ReplaceDay(ctx context.Context, day time.Time, sources []string, recs []Record) error
 	Query(ctx context.Context, q Query) ([]Record, error)
 	// LatestDay returns the most recent day that has any records for src (empty
 	// src = any source). ok is false when the store has no matching data.

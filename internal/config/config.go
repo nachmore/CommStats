@@ -20,6 +20,50 @@ type Config struct {
 	// the stored "fiducia-leads"), but is otherwise literal — a typo'd entry
 	// matches nothing and is reported as a warning rather than silently fixed.
 	Ignore []string `json:"ignore"`
+
+	// IgnoreMeetingCategories lists Outlook calendar categories whose events
+	// should NOT count as meetings (e.g. "Room Bookings", "Doc Writing"). These
+	// are applied at collection time — an event tagged with any listed category
+	// is dropped from all calendar metrics — so changing this list requires a
+	// re-collect. Matching is case-insensitive on the trimmed category name.
+	IgnoreMeetingCategories []string `json:"ignore_meeting_categories"`
+}
+
+// CategoryFilter tests whether a calendar event's categories mark it for
+// exclusion from meeting stats.
+type CategoryFilter struct {
+	keys map[string]struct{}
+}
+
+// NewCategoryFilter builds a filter from configured category names.
+func NewCategoryFilter(names []string) CategoryFilter {
+	keys := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		if k := normalizeCategory(n); k != "" {
+			keys[k] = struct{}{}
+		}
+	}
+	return CategoryFilter{keys: keys}
+}
+
+// Excludes reports whether any of an event's categories is configured to be
+// ignored.
+func (f CategoryFilter) Excludes(categories []string) bool {
+	if len(f.keys) == 0 {
+		return false
+	}
+	for _, c := range categories {
+		if _, ok := f.keys[normalizeCategory(c)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeCategory lower-cases and trims; categories may contain spaces and
+// emoji ("⛔ DND"), so unlike channel names we don't strip any prefix.
+func normalizeCategory(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
 }
 
 // Load reads <ConfigDir>/config.json. A missing file yields an empty config,
