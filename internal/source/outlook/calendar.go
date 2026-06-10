@@ -15,7 +15,10 @@ type interval struct{ start, end time.Time }
 // collectCalendar turns a day's events into per-day histogram metrics. The
 // window w is attached to every metric; homeOrg is the registrable org label of
 // the signed-in user (e.g. "amazon") used for external-participant detection.
-func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAddr, homeOrg string) []source.Metric {
+// dayStart/dayEnd bound the calendar day so multi-day or midnight-spanning
+// events only contribute the portion that falls within the day (otherwise a
+// single 3-day event would inflate one day past 24h).
+func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAddr, homeOrg string, dayStart, dayEnd time.Time) []source.Metric {
 	var (
 		byType     = map[string]int{} // entry kind: meeting/all-day/all-day-free/personal-block
 		bySize     = map[string]int{} // participant-count buckets (real meetings only)
@@ -95,9 +98,18 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 				byHour[st.Local().Hour()]++
 			}
 			totalMin += dur.Minutes()
-			if okS && okE && en.After(st) {
-				meetingIvls = append(meetingIvls, interval{st, en})
-			}
+		}
+
+		// Busy-time contribution (for de-overlapped time-spent): real meetings
+		// contribute their in-day span; busy all-day events (offsites — not the
+		// free informational banners) contribute a nominal capped block so a
+		// 24h all-day event counts as a normal workday, not a literal 24h.
+		if isMeeting && !free && okS && okE && en.After(st) {
+			meetingIvls = append(meetingIvls, clampInterval(st, en, dayStart, dayEnd))
+		} else if e.IsAllDay && !free {
+			// 09:00–17:00 local nominal workday block, capped at allDayBusyCap.
+			bs := time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), 9, 0, 0, 0, dayStart.Location())
+			meetingIvls = append(meetingIvls, clampInterval(bs, bs.Add(allDayBusyCap), dayStart, dayEnd))
 		}
 
 		for _, cat := range e.Categories {
@@ -219,15 +231,34 @@ func orgOf(email string) string {
 	return labels[len(labels)-2]
 }
 
+// allDayBusyCap is the time a busy all-day event (e.g. an offsite) contributes
+// to time-spent — a nominal workday rather than a literal 24h.
+const allDayBusyCap = 8 * time.Hour
+
+// clampInterval restricts [s,e] to the [dayStart,dayEnd] window.
+func clampInterval(s, e, dayStart, dayEnd time.Time) interval {
+	if s.Before(dayStart) {
+		s = dayStart
+	}
+	if e.After(dayEnd) {
+		e = dayEnd
+	}
+	return interval{s, e}
+}
+
 // mergedMinutes returns the total minutes covered by the union of the given
 // intervals, so overlapping (double-booked) meetings count their wall-clock
 // time once — the real "time spent in meetings".
 func mergedMinutes(iv []interval) float64 {
-	if len(iv) == 0 {
+	sorted := make([]interval, 0, len(iv))
+	for _, v := range iv {
+		if v.end.After(v.start) { // drop empty/inverted intervals
+			sorted = append(sorted, v)
+		}
+	}
+	if len(sorted) == 0 {
 		return 0
 	}
-	sorted := make([]interval, len(iv))
-	copy(sorted, iv)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].start.Before(sorted[j].start) })
 	var total float64
 	curStart, curEnd := sorted[0].start, sorted[0].end

@@ -129,7 +129,8 @@ func (s *Source) Collect(ctx context.Context, w source.TimeWindow) ([]source.Met
 
 	// Rich calendar metrics: fetch the day's events and bucket them.
 	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
-	events, err := c.calendarEvents(ctx, dayStart, dayStart.AddDate(0, 0, 1))
+	dayEnd := dayStart.AddDate(0, 0, 1)
+	events, err := c.calendarEvents(ctx, dayStart, dayEnd)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +142,7 @@ func (s *Source) Collect(ctx context.Context, w source.TimeWindow) ([]source.Met
 	if err != nil {
 		return nil, err
 	}
-	metrics = append(metrics, collectCalendar(sourceCalendar, w, events, selfAddr, homeOrg)...)
+	metrics = append(metrics, collectCalendar(sourceCalendar, w, events, selfAddr, homeOrg, dayStart, dayEnd)...)
 
 	return metrics, nil
 }
