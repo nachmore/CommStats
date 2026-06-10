@@ -311,26 +311,99 @@ function renderOverview(panel) {
   (ov.sources || []).forEach(s => {
     const card = el("div", "headline");
     card.appendChild(el("h4", null, s.label || s.source));
-    (s.stats || []).forEach(stat => {
+    const addRow = (label, compute) => {
       const row = el("div", "row");
-      row.appendChild(el("span", null, stat.label));
+      row.appendChild(el("span", null, label));
       const n = el("span", "n");
       row.appendChild(n);
       card.appendChild(row);
-      // Recompute this figure for the current window on every control change.
-      REDRAW.push(() => { n.textContent = fmtStat(stat, reduceStat(stat)); });
-      n.textContent = fmtStat(stat, reduceStat(stat));
-    });
+      REDRAW.push(() => { n.textContent = compute(); });
+      n.textContent = compute();
+    };
+    (s.stats || []).forEach(stat => addRow(stat.label, () => fmtStat(stat, reduceStat(stat))));
+    // Estimated time + a daily average over active days in the window.
+    const est = EST_TIME[s.source];
+    if (est) {
+      addRow("est. time", () => {
+        const mins = inWindow(est).reduce((a,p)=>a+p.v,0);
+        return mins >= 60 ? (mins/60).toFixed(1) + " h" : Math.round(mins) + " m";
+      });
+      addRow("est. time / active day", () => {
+        const pts = inWindow(est);
+        const days = new Set(); let mins = 0;
+        pts.forEach(p => { if (p.v > 0) { days.add(p.d); mins += p.v; } });
+        return days.size ? Math.round(mins/days.size) + " m" : "0 m";
+      });
+    }
     hl.appendChild(card);
   });
   panel.appendChild(hl);
 
-  // Combined activity charts (weekday + hour), each source normalized to its
-  // own peak (0-100%) so mediums in different units compare on pattern.
+  // "Where does my time go" — estimated time across mediums in a common unit
+  // (minutes). Meetings are actual; messages/emails use rough per-item
+  // heuristics, so the figures are estimates.
+  const note = el("div", "muted");
+  note.style.margin = "0 0 14px";
+  note.textContent = "Time is estimated: meetings use actual minutes; Slack ≈ 0.5 min/message, email ≈ 1.3 min/message (read+sent). Rough heuristics.";
+  panel.appendChild(note);
+
   const grid = el("div", "grid");
-  combinedActivity(grid, "Activity by day of week (% of each source's peak)", "weekday");
+  timeSpentDoughnut(grid);
+  timeTrendStacked(grid);
   combinedActivity(grid, "Activity by hour of day (% of each source's peak)", "hour");
   panel.appendChild(grid);
+}
+
+// timeSpentDoughnut shows estimated hours per source over the window, with the
+// total in the title — the headline "where does my time go" answer.
+function timeSpentDoughnut(grid) {
+  const card = el("div", "card");
+  const h = el("h3", null, "Estimated time spent");
+  card.appendChild(h);
+  const cv = makeCanvas(card);
+  const srcs = Object.keys(EST_TIME);
+  const recompute = () => {
+    const hrs = srcs.map(s => inWindow(EST_TIME[s]).reduce((a,p)=>a+p.v,0) / 60);
+    const total = hrs.reduce((a,b)=>a+b,0);
+    h.textContent = "Estimated time spent — " + Math.round(total).toLocaleString() + " h total";
+    return { labels: srcs.map(labelFor), datasets: [{ data: hrs, backgroundColor: srcs.map((_,i)=>color(i)) }] };
+  };
+  const ch = new Chart(cv, { type: "doughnut", data: recompute(),
+    options: { responsive: true, plugins: { legend: { position: "bottom" },
+      tooltip: { callbacks: { label: c => c.label + ": " + Math.round(c.parsed).toLocaleString() + " h" } } } } });
+  register(ch, recompute);
+  grid.appendChild(card);
+}
+
+// timeTrendStacked shows estimated hours per source over time, stacked, at the
+// global aggregation — total comms load and its composition trending.
+function timeTrendStacked(grid) {
+  const card = el("div", "card");
+  card.appendChild(el("h3", null, "Estimated time over period (stacked)"));
+  const cv = makeCanvas(card);
+  const srcs = Object.keys(EST_TIME);
+  const recompute = () => {
+    // Union of bucket labels across sources, chronological.
+    const perSrc = srcs.map(s => aggregateSeries(EST_TIME[s], "sum"));
+    const labelSet = [];
+    const seen = new Set();
+    perSrc.forEach(a => a.labels.forEach(l => { if (!seen.has(l)) { seen.add(l); labelSet.push(l); } }));
+    const datasets = srcs.map((s, i) => {
+      const a = perSrc[i];
+      const m = {}; a.labels.forEach((l, j) => m[l] = a.data[j] / 60);
+      return { label: labelFor(s), data: labelSet.map(l => m[l] || 0), backgroundColor: color(i) };
+    });
+    return { labels: labelSet, datasets };
+  };
+  const ch = new Chart(cv, { type: "bar", data: recompute(),
+    options: { responsive: true, scales: { x: { stacked: true }, y: { stacked: true, title: { display: true, text: "estimated hours" } } } } });
+  register(ch, recompute);
+  grid.appendChild(card);
+}
+
+function labelFor(src) {
+  const s = (DATA.sources || []).find(x => x.source === src);
+  return (s && s.label) || src;
 }
 
 // combinedActivity builds a normalized grouped-bar chart across sources, from
@@ -370,6 +443,8 @@ function combinedActivity(grid, title, mode) {
 // OVERVIEW_ACTIVITY: per-source daily points for weekday (primary metric) and
 // hour (hour metric), provided by the document for client-side windowing.
 const OVERVIEW_ACTIVITY = DATA.overview && DATA.overview.activity || {};
+// EST_TIME: per-source daily estimated-minutes points for the time-spent views.
+const EST_TIME = DATA.overview && DATA.overview.est_time || {};
 
 // --- tabs ---
 

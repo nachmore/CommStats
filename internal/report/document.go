@@ -23,6 +23,9 @@ type Overview struct {
 	// Activity holds, per source, the raw daily points the client windows and
 	// normalizes for the combined weekday/hour charts.
 	Activity map[string]SourceActivity `json:"activity"`
+	// EstTime holds, per source, daily estimated-minutes points so the client
+	// can window them into the "where does my time go" time-spent views.
+	EstTime map[string][]DayPoint `json:"est_time"`
 }
 
 // SourceActivity carries a source's daily points for the combined overview
@@ -152,11 +155,16 @@ func chartFor(g MetricGroup, topN int) Chart {
 // own headline figures (it knows which metrics are canonical); otherwise we
 // fall back to summing each dimensionless scalar metric.
 func buildOverview(recsBySource map[string][]store.Record, srcOrder []string) Overview {
-	ov := Overview{Activity: map[string]SourceActivity{}}
+	ov := Overview{Activity: map[string]SourceActivity{}, EstTime: map[string][]DayPoint{}}
 	for _, src := range srcOrder {
 		h := SourceHeadline{Source: src, Label: sourceLabel(src)}
 		if r, ok := reporterFor(src); ok {
 			h.Stats = r.Headline(recsBySource[src])
+			if et, ok := r.(EstimatedTimer); ok {
+				if pts := et.EstimatedMinutes(recsBySource[src]); len(pts) > 0 {
+					ov.EstTime[src] = pts
+				}
+			}
 		} else {
 			h.Stats = genericHeadline(recsBySource[src])
 		}
@@ -164,6 +172,13 @@ func buildOverview(recsBySource map[string][]store.Record, srcOrder []string) Ov
 		ov.Activity[src] = sourceActivity(src, recsBySource[src])
 	}
 	return ov
+}
+
+// EstimatedTimer lets a source contribute daily estimated-minutes points to the
+// overview's "where does my time go" views. Meetings report actual minutes;
+// message/email sources apply a documented per-item heuristic.
+type EstimatedTimer interface {
+	EstimatedMinutes(recs []store.Record) []DayPoint
 }
 
 // sourceActivity extracts a source's daily activity points for the combined

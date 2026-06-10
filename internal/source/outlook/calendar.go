@@ -30,6 +30,8 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 
 	// Busy intervals for overbooking detection.
 	var busy []interval
+	// Real-meeting intervals, merged for actual (de-overlapped) time spent.
+	var meetingIvls []interval
 
 	for _, e := range events {
 		// Skip free/canceled holds entirely from "meeting" stats: ShowAs Free
@@ -93,6 +95,9 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 				byHour[st.Local().Hour()]++
 			}
 			totalMin += dur.Minutes()
+			if okS && okE && en.After(st) {
+				meetingIvls = append(meetingIvls, interval{st, en})
+			}
 		}
 
 		for _, cat := range e.Categories {
@@ -132,6 +137,7 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 	}
 	metrics = append(metrics,
 		source.Metric{Source: srcName, Name: "meeting_minutes", Value: totalMin, Window: w},
+		source.Metric{Source: srcName, Name: "meeting_busy_minutes", Value: mergedMinutes(meetingIvls), Window: w},
 		source.Metric{Source: srcName, Name: "calendar_overbookings", Value: float64(overbooked), Window: w},
 	)
 	return metrics
@@ -211,6 +217,30 @@ func orgOf(email string) string {
 		return labels[len(labels)-3]
 	}
 	return labels[len(labels)-2]
+}
+
+// mergedMinutes returns the total minutes covered by the union of the given
+// intervals, so overlapping (double-booked) meetings count their wall-clock
+// time once — the real "time spent in meetings".
+func mergedMinutes(iv []interval) float64 {
+	if len(iv) == 0 {
+		return 0
+	}
+	sorted := make([]interval, len(iv))
+	copy(sorted, iv)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].start.Before(sorted[j].start) })
+	var total float64
+	curStart, curEnd := sorted[0].start, sorted[0].end
+	for _, v := range sorted[1:] {
+		if v.start.After(curEnd) {
+			total += curEnd.Sub(curStart).Minutes()
+			curStart, curEnd = v.start, v.end
+		} else if v.end.After(curEnd) {
+			curEnd = v.end
+		}
+	}
+	total += curEnd.Sub(curStart).Minutes()
+	return total
 }
 
 // countOverlapping returns how many intervals overlap at least one other

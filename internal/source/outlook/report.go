@@ -19,6 +19,13 @@ func (emailReporter) PrimaryMetric() string { return "emails_sent" }
 // HourMetric contributes received-email volume to the combined hours chart.
 func (emailReporter) HourMetric() string { return "emails_received_by_hour" }
 
+// EstimatedMinutes estimates email time from emails read + sent (the ones you
+// actually engage with) at ~1.3 min each.
+func (emailReporter) EstimatedMinutes(recs []store.Record) []report.DayPoint {
+	engaged := append(report.WithMetric(recs, "emails_read"), report.WithMetric(recs, "emails_sent")...)
+	return report.EstMinutesFromCount(engaged, report.MinPerEmail)
+}
+
 func (emailReporter) Headline(recs []store.Record) []report.HeadlineStat {
 	return []report.HeadlineStat{
 		report.SumStat("received", report.WithMetric(recs, "emails_received")),
@@ -53,6 +60,12 @@ func (calendarReporter) PrimaryMetric() string { return "meeting_minutes" }
 
 // HourMetric contributes meeting start-hour volume to the combined chart.
 func (calendarReporter) HourMetric() string { return "meetings_by_hour" }
+
+// EstimatedMinutes uses actual meeting time, de-overlapped (busy minutes), so
+// double-booked meetings count their wall-clock time once.
+func (calendarReporter) EstimatedMinutes(recs []store.Record) []report.DayPoint {
+	return report.EstMinutesFromMinutes(report.WithMetric(recs, "meeting_busy_minutes"))
+}
 
 func (calendarReporter) Headline(recs []store.Record) []report.HeadlineStat {
 	// Canonical meeting count = the size partition, which is emitted only for

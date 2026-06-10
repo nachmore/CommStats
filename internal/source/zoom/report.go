@@ -16,6 +16,11 @@ func (zoomReporter) AppName() string       { return "Zoom" }
 func (zoomReporter) PrimaryMetric() string { return "zoom_minutes" }
 func (zoomReporter) HourMetric() string    { return "meetings_by_hour" }
 
+// Zoom intentionally does NOT contribute to the overview time totals: its
+// meetings are largely the same events as the calendar, so counting both would
+// double-count meeting time. Calendar is the authoritative meeting-time source;
+// Zoom's tab keeps its unique attendance detail.
+
 func (zoomReporter) Headline(recs []store.Record) []report.HeadlineStat {
 	return []report.HeadlineStat{
 		report.SumStat("meetings", report.WithMetric(recs, "zoom_meetings")),

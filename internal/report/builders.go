@@ -186,3 +186,36 @@ func AfterHoursStat(label string, recs []store.Record) HeadlineStat {
 func IsChannelType(r store.Record, realChannel bool) bool {
 	return isRealChannel(r.Dimensions[dimChannelType]) == realChannel
 }
+
+// Time-estimation heuristics (minutes per item). These are deliberately rough
+// and surfaced as "est." in the UI. Sources:
+//   - Email ~1.3 min/msg: McKinsey (Social Economy) — professionals spend ~28%
+//     of the workweek / ~2.6h/day on email across ~120 msgs/day; 2.6h÷120≈1.3.
+//   - Slack ~0.5 min/msg: no clean published per-message figure; chat is
+//     short-burst. Applied to messages sent (active authoring) to avoid wildly
+//     overcounting passive reading of high-volume channels.
+const (
+	MinPerEmail   = 1.3
+	MinPerMessage = 0.5
+)
+
+// EstMinutesFromCount builds daily estimated-minutes points by multiplying a
+// per-day count metric by minutesPer. Use for message/email volume where no
+// real duration exists.
+func EstMinutesFromCount(recs []store.Record, minutesPer float64) []DayPoint {
+	pts := make([]DayPoint, 0, len(recs))
+	for _, r := range recs {
+		pts = append(pts, DayPoint{Date: dayStr(r), Value: r.Value * minutesPer})
+	}
+	return pts
+}
+
+// EstMinutesFromMinutes builds daily estimated-minutes points from a metric
+// that already carries real minutes (meetings).
+func EstMinutesFromMinutes(recs []store.Record) []DayPoint {
+	pts := make([]DayPoint, 0, len(recs))
+	for _, r := range recs {
+		pts = append(pts, DayPoint{Date: dayStr(r), Value: r.Value})
+	}
+	return pts
+}

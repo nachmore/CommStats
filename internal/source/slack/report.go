@@ -21,6 +21,11 @@ func (slackReporter) PrimaryMetric() string { return "messages" }
 // HourMetric contributes Slack's hourly message volume to the combined chart.
 func (slackReporter) HourMetric() string { return "messages_by_hour" }
 
+// EstimatedMinutes estimates Slack time from message volume (~0.5 min each).
+func (slackReporter) EstimatedMinutes(recs []store.Record) []report.DayPoint {
+	return report.EstMinutesFromCount(report.WithMetric(recs, "messages"), report.MinPerMessage)
+}
+
 // Headline totals shown on the overview tab (windowed client-side).
 func (slackReporter) Headline(recs []store.Record) []report.HeadlineStat {
 	msgs := report.WithMetric(recs, "messages")
