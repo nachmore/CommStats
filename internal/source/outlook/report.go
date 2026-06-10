@@ -13,11 +13,7 @@ func init() {
 // emailReporter curates the email report tab.
 type emailReporter struct{}
 
-func (emailReporter) AppName() string       { return "Outlook" }
-func (emailReporter) PrimaryMetric() string { return "emails_sent" }
-
-// HourMetric contributes received-email volume to the combined hours chart.
-func (emailReporter) HourMetric() string { return "emails_received_by_hour" }
+func (emailReporter) AppName() string { return "Outlook" }
 
 // EstimatedMinutes estimates email time from emails read + sent (the ones you
 // actually engage with) at ~1.3 min each.
@@ -55,11 +51,7 @@ func (emailReporter) Charts(recs []store.Record, topN int) []report.Chart {
 // — only the size partition is the canonical headcount.
 type calendarReporter struct{}
 
-func (calendarReporter) AppName() string       { return "Outlook" }
-func (calendarReporter) PrimaryMetric() string { return "meeting_minutes" }
-
-// HourMetric contributes meeting start-hour volume to the combined chart.
-func (calendarReporter) HourMetric() string { return "meetings_by_hour" }
+func (calendarReporter) AppName() string { return "Outlook" }
 
 // EstimatedMinutes uses actual meeting time, de-overlapped (busy minutes), so
 // double-booked meetings count their wall-clock time once.

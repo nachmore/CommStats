@@ -31,6 +31,11 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 		byScope    = map[string]int{} // internal / external
 		byHour     = map[int]int{}    // meeting start hour (local)
 		totalMin   float64
+		// Per-partition meeting minutes (real meetings only), so the overview can
+		// chart hours — not just counts — by category/scope/size.
+		minBySize     = map[string]float64{}
+		minByScope    = map[string]float64{}
+		minByCategory = map[string]float64{}
 	)
 
 	// Busy intervals for overbooking detection.
@@ -101,7 +106,9 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 		// not all-day items or personal blocks.
 		isMeeting := !e.IsAllDay && others > 0
 		if isMeeting {
+			mins := dur.Minutes()
 			bySize[sizeBucket(others+1)]++
+			minBySize[sizeBucket(others+1)] += mins
 			byDuration[durationBucket(dur, e.IsAllDay)]++
 			if e.IsOrganizer {
 				byRole["organizer"]++
@@ -111,13 +118,20 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 			byResponse[responseBucket(e.IsOrganizer, e.ResponseStatus.Response)]++
 			if hasExternal {
 				byScope["external"]++
+				minByScope["external"] += mins
 			} else {
 				byScope["internal"]++
+				minByScope["internal"] += mins
 			}
 			if okS {
 				byHour[st.Local().Hour()]++
 			}
-			totalMin += dur.Minutes()
+			totalMin += mins
+			for _, cat := range e.Categories {
+				if cat != "" {
+					minByCategory[cat] += mins
+				}
+			}
 		}
 
 		// Busy-time contribution (for de-overlapped time-spent): real meetings
@@ -163,6 +177,16 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 	add("meetings", byResponse, "response")
 	add("meetings", byScope, "scope")
 	add("meetings", byCategory, "category")
+	// Per-partition meeting minutes (real meetings only) for hours-based charts.
+	addMin := func(name string, counts map[string]float64, dimKey string) {
+		for k, v := range counts {
+			metrics = append(metrics, source.Metric{Source: srcName, Name: name, Value: v,
+				Window: w, Dimensions: map[string]string{dimKey: k}})
+		}
+	}
+	addMin("meeting_minutes_by", minBySize, "size")
+	addMin("meeting_minutes_by", minByScope, "scope")
+	addMin("meeting_minutes_by", minByCategory, "category")
 	// Meeting start hour (local), as its own ordered histogram metric.
 	for h, v := range byHour {
 		metrics = append(metrics, src("meetings_by_hour", v, map[string]string{"hour": fmt.Sprintf("%02d", h)}))
@@ -173,6 +197,17 @@ func collectCalendar(srcName string, w source.TimeWindow, events []event, selfAd
 		source.Metric{Source: srcName, Name: "calendar_overbookings", Value: float64(overbooked), Window: w},
 		source.Metric{Source: srcName, Name: "ooo_blocks", Value: float64(oooCount), Window: w},
 	)
+
+	// Focus time: the longest meeting-free block within the 09:00–17:00 work
+	// window — the headline "deep work" capacity for the day. Only emitted on
+	// weekdays; a weekend's wide-open calendar isn't protected focus time and
+	// would otherwise inflate the average.
+	if wd := dayStart.Weekday(); wd != time.Saturday && wd != time.Sunday {
+		workStart := time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), 9, 0, 0, 0, dayStart.Location())
+		workEnd := time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), 17, 0, 0, 0, dayStart.Location())
+		metrics = append(metrics, source.Metric{Source: srcName, Name: "focus_minutes",
+			Value: longestFreeBlock(meetingIvls, workStart, workEnd), Window: w})
+	}
 	return metrics
 }
 
@@ -301,6 +336,44 @@ func mergedMinutes(iv []interval) float64 {
 	}
 	total += curEnd.Sub(curStart).Minutes()
 	return total
+}
+
+// longestFreeBlock returns the longest stretch of minutes inside [workStart,
+// workEnd] not covered by any meeting interval. Meetings are clamped to the
+// work window first, then merged; the answer is the largest gap between merged
+// busy spans (including the leading gap before the first meeting and the
+// trailing gap after the last). A fully free work window returns its full
+// length; a fully booked one returns 0.
+func longestFreeBlock(iv []interval, workStart, workEnd time.Time) float64 {
+	if !workEnd.After(workStart) {
+		return 0
+	}
+	// Clamp meeting intervals to the work window, dropping those outside it.
+	var busy []interval
+	for _, v := range iv {
+		c := clampInterval(v.start, v.end, workStart, workEnd)
+		if c.end.After(c.start) {
+			busy = append(busy, c)
+		}
+	}
+	if len(busy) == 0 {
+		return workEnd.Sub(workStart).Minutes()
+	}
+	sort.Slice(busy, func(i, j int) bool { return busy[i].start.Before(busy[j].start) })
+	var best float64
+	cursor := workStart // end of the busy coverage seen so far
+	for _, b := range busy {
+		if gap := b.start.Sub(cursor).Minutes(); gap > best {
+			best = gap
+		}
+		if b.end.After(cursor) {
+			cursor = b.end
+		}
+	}
+	if gap := workEnd.Sub(cursor).Minutes(); gap > best {
+		best = gap
+	}
+	return best
 }
 
 // countOverlapping returns how many intervals overlap at least one other

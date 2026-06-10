@@ -350,7 +350,10 @@ function renderOverview(panel) {
   const grid = el("div", "grid");
   timeSpentDoughnut(grid);
   timeTrendStacked(grid);
-  combinedActivity(grid, "Activity by hour of day (% of each source's peak)", "hour");
+  // Server-built cross-source charts (meeting hours by category/scope/size,
+  // calendar vs zoom, focus time). They reuse the standard chart renderer, so
+  // the global window/aggregation controls drive them too.
+  (ov.charts || []).forEach(c => renderChart(grid, c));
   panel.appendChild(grid);
 }
 
@@ -406,43 +409,6 @@ function labelFor(src) {
   return (s && s.label) || src;
 }
 
-// combinedActivity builds a normalized grouped-bar chart across sources, from
-// each source's weekday/hour metric points, recomputed on window change.
-function combinedActivity(grid, title, mode) {
-  const card = el("div", "card wide");
-  card.appendChild(el("h3", null, title));
-  const cv = makeCanvas(card);
-  const labels = mode === "weekday"
-    ? ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
-    : Array.from({length:24}, (_,i) => String(i).padStart(2,"0"));
-  const recompute = () => {
-    const datasets = [];
-    (DATA.sources || []).forEach((s, si) => {
-      const pts = (OVERVIEW_ACTIVITY[s.source] || {})[mode];
-      if (!pts) return;
-      let arr;
-      if (mode === "weekday") {
-        arr = weekdayAvg(pts).data;
-      } else {
-        const sums = new Array(24).fill(0);
-        inWindow(pts).forEach(p => { const h = parseInt(p.k,10); if (h>=0&&h<24) sums[h]+=p.v; });
-        arr = sums;
-      }
-      const max = Math.max(...arr, 0);
-      const norm = max ? arr.map(v => v/max*100) : arr;
-      datasets.push({ label: s.label || s.source, data: norm, backgroundColor: color(si) });
-    });
-    return { labels, datasets };
-  };
-  const ch = new Chart(cv, { type: "bar", data: recompute(),
-    options: { responsive: true, scales: { y: { title: { display: true, text: "% of own peak" }, max: 100 } } } });
-  register(ch, recompute);
-  grid.appendChild(card);
-}
-
-// OVERVIEW_ACTIVITY: per-source daily points for weekday (primary metric) and
-// hour (hour metric), provided by the document for client-side windowing.
-const OVERVIEW_ACTIVITY = DATA.overview && DATA.overview.activity || {};
 // EST_TIME: per-source daily estimated-minutes points for the time-spent views.
 const EST_TIME = DATA.overview && DATA.overview.est_time || {};
 

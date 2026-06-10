@@ -20,20 +20,14 @@ type Document struct {
 // Overview is the cross-source summary tab.
 type Overview struct {
 	Sources []SourceHeadline `json:"sources"` // per-source headline totals
-	// Activity holds, per source, the raw daily points the client windows and
-	// normalizes for the combined weekday/hour charts.
-	Activity map[string]SourceActivity `json:"activity"`
 	// EstTime holds, per source, daily estimated-minutes points so the client
 	// can window them into the "where does my time go" time-spent views.
 	EstTime map[string][]DayPoint `json:"est_time"`
-}
-
-// SourceActivity carries a source's daily points for the combined overview
-// charts: weekday uses the primary metric's daily values; hour uses the hour
-// metric's points (keyed by hour).
-type SourceActivity struct {
-	Weekday []DayPoint `json:"weekday"`
-	Hour    []DayPoint `json:"hour"`
+	// Charts are pre-built cross-source overview visualizations (meeting hours by
+	// category/scope/size, calendar-vs-zoom, focus time). They reuse the same
+	// Chart shape as source tabs, so the client windows + aggregates them with
+	// the global controls; their values are already scaled to display units.
+	Charts []Chart `json:"charts"`
 }
 
 // SourceHeadline is a compact per-source summary for the overview tab. Label is
@@ -150,12 +144,12 @@ func chartFor(g MetricGroup, topN int) Chart {
 	}
 }
 
-// buildOverview produces per-source headline totals and a combined weekday-
-// activity chart across sources. A source's registered Reporter supplies its
-// own headline figures (it knows which metrics are canonical); otherwise we
-// fall back to summing each dimensionless scalar metric.
+// buildOverview produces per-source headline totals plus the cross-source
+// overview charts. A source's registered Reporter supplies its own headline
+// figures (it knows which metrics are canonical); otherwise we fall back to
+// summing each dimensionless scalar metric.
 func buildOverview(recsBySource map[string][]store.Record, srcOrder []string) Overview {
-	ov := Overview{Activity: map[string]SourceActivity{}, EstTime: map[string][]DayPoint{}}
+	ov := Overview{EstTime: map[string][]DayPoint{}}
 	for _, src := range srcOrder {
 		h := SourceHeadline{Source: src, Label: sourceLabel(src)}
 		if r, ok := reporterFor(src); ok {
@@ -169,9 +163,77 @@ func buildOverview(recsBySource map[string][]store.Record, srcOrder []string) Ov
 			h.Stats = genericHeadline(recsBySource[src])
 		}
 		ov.Sources = append(ov.Sources, h)
-		ov.Activity[src] = sourceActivity(src, recsBySource[src])
 	}
+	ov.Charts = overviewCharts(recsBySource)
 	return ov
+}
+
+// overviewCharts builds the cross-source landing visualizations from the stored
+// metrics. Minute-valued metrics are scaled to hours so the charts read in the
+// same unit as the time-spent views.
+func overviewCharts(recsBySource map[string][]store.Record) []Chart {
+	cal := recsBySource["calendar"]
+	zoom := recsBySource["zoom"]
+
+	minByCat := withDimKey(WithMetric(cal, "meeting_minutes_by"), "category")
+	minByScope := withDimKey(WithMetric(cal, "meeting_minutes_by"), "scope")
+	minBySize := withDimKey(WithMetric(cal, "meeting_minutes_by"), "size")
+
+	var charts []Chart
+	if len(minByCat) > 0 {
+		charts = append(charts, hoursDoughnut("Meeting hours by category", "category", minByCat))
+	}
+	// Calendar (de-overlapped busy) vs Zoom minutes over time, both in hours.
+	calBusy := WithMetric(cal, "meeting_busy_minutes")
+	zoomMin := WithMetric(zoom, "zoom_minutes")
+	if len(calBusy) > 0 || len(zoomMin) > 0 {
+		c := DualSeriesChart("Calendar vs Zoom hours", "calendar hours", scaleRecords(calBusy, 1.0/60),
+			"zoom hours", "sum", "", scaleRecords(zoomMin, 1.0/60))
+		charts = append(charts, c)
+	}
+	if focus := WithMetric(cal, "focus_minutes"); len(focus) > 0 {
+		c := ScalarSeriesChart("Daily focus time (longest meeting-free block, hours)", scaleRecords(focus, 1.0/60))
+		charts = append(charts, c)
+	}
+	if len(minByScope) > 0 {
+		charts = append(charts, hoursBreakdown("Meeting hours: internal vs external", "scope", minByScope))
+	}
+	if len(minBySize) > 0 {
+		charts = append(charts, hoursBreakdown("Meeting hours by size", "size", minBySize))
+	}
+	return charts
+}
+
+// scaleRecords returns copies of recs with values multiplied by factor — used
+// to convert minute metrics to hours before charting.
+func scaleRecords(recs []store.Record, factor float64) []store.Record {
+	out := make([]store.Record, len(recs))
+	for i, r := range recs {
+		r.Value *= factor
+		out[i] = r
+	}
+	return out
+}
+
+// hoursDoughnut / hoursBreakdown chart a minute-valued, dimensioned metric as
+// hours, summed per dimension value.
+func hoursDoughnut(title, dimKey string, recs []store.Record) Chart {
+	return DoughnutChart(title, dimKey, scaleRecords(recs, 1.0/60))
+}
+func hoursBreakdown(title, dimKey string, recs []store.Record) Chart {
+	return BreakdownChart(title, dimKey, scaleRecords(recs, 1.0/60))
+}
+
+// withDimKey returns records carrying the given dimension key (the
+// "meeting_minutes_by" metric is emitted with several disjoint dimension keys).
+func withDimKey(recs []store.Record, dimKey string) []store.Record {
+	out := recs[:0:0]
+	for _, r := range recs {
+		if _, ok := r.Dimensions[dimKey]; ok {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // EstimatedTimer lets a source contribute daily estimated-minutes points to the
@@ -179,39 +241,6 @@ func buildOverview(recsBySource map[string][]store.Record, srcOrder []string) Ov
 // message/email sources apply a documented per-item heuristic.
 type EstimatedTimer interface {
 	EstimatedMinutes(recs []store.Record) []DayPoint
-}
-
-// sourceActivity extracts a source's daily activity points for the combined
-// overview charts: weekday from its primary metric (daily values), hour from
-// its declared hour metric (keyed by hour). The client windows + normalizes.
-func sourceActivity(src string, recs []store.Record) SourceActivity {
-	var sa SourceActivity
-	if metric := primaryMetric(src, recs); metric != "" {
-		for _, r := range recs {
-			if r.Name == metric {
-				sa.Weekday = append(sa.Weekday, DayPoint{Date: r.Day.Format("2006-01-02"), Value: r.Value})
-			}
-		}
-	}
-	if r, ok := reporterFor(src); ok {
-		if hm, ok := r.(HourMetricer); ok {
-			hmetric := hm.HourMetric()
-			for _, rec := range recs {
-				if rec.Name == hmetric {
-					sa.Hour = append(sa.Hour, DayPoint{
-						Date: rec.Day.Format("2006-01-02"), Key: rec.Dimensions["hour"], Value: rec.Value})
-				}
-			}
-		}
-	}
-	return sa
-}
-
-// HourMetricer lets a curated source declare an hour-bucketed metric (with a
-// numeric "hour" dimension) to contribute to the overview's combined busiest-
-// hours chart.
-type HourMetricer interface {
-	HourMetric() string
 }
 
 // genericHeadline emits a windowable sum stat for each dimensionless scalar
@@ -230,47 +259,7 @@ func genericHeadline(recs []store.Record) []HeadlineStat {
 	return out
 }
 
-// PrimaryMetricer lets a curated source declare its representative volume
-// metric for cross-source "activity" charts. It must be a single-partition
-// metric (one whose records sum cleanly per day, e.g. Slack "messages").
-type PrimaryMetricer interface {
-	PrimaryMetric() string
-}
-
-// primaryMetric returns the metric name to use as a source's activity line:
-// the reporter's declared PrimaryMetric if it implements PrimaryMetricer,
-// otherwise the highest-volume dimensionless scalar metric.
-func primaryMetric(src string, recs []store.Record) string {
-	if r, ok := reporterFor(src); ok {
-		if pm, ok := r.(PrimaryMetricer); ok {
-			return pm.PrimaryMetric()
-		}
-	}
-	totals := map[string]float64{}
-	for _, r := range recs {
-		if len(r.Dimensions) == 0 {
-			totals[r.Name] += r.Value
-		}
-	}
-	best, bestV := "", -1.0
-	for _, name := range sortedKeys(totals) {
-		if totals[name] > bestV {
-			best, bestV = name, totals[name]
-		}
-	}
-	return best
-}
-
 // --- small helpers ---
-
-func sortedKeys(m map[string]float64) []string {
-	ks := make([]string, 0, len(m))
-	for k := range m {
-		ks = append(ks, k)
-	}
-	sort.Strings(ks)
-	return ks
-}
 
 func sortedKeysS(m map[string][]store.Record) []string {
 	ks := make([]string, 0, len(m))
